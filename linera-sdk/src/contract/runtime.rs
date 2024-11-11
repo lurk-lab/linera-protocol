@@ -292,6 +292,12 @@ where
     pub fn assert_data_blob_exists(&mut self, hash: DataBlobHash) {
         wit::assert_data_blob_exists(hash.0.into())
     }
+
+    /// Verifies a proof represented as a data blob from storage.
+    pub fn verify_proof(&mut self, hash: DataBlobHash) -> Vec<u8> {
+        // TODO: wasm-ffi-verification ensure reads proof for now
+        wit::verify_proof(hash.0.into())
+    }
 }
 
 /// A helper type that uses the builder pattern to configure how a message is sent, and then

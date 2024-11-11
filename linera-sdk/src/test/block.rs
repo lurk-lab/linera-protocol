@@ -98,7 +98,7 @@ impl BlockBuilder {
     }
 
     /// Adds a [`SystemOperation`] to this block.
-    pub(crate) fn with_system_operation(&mut self, operation: SystemOperation) -> &mut Self {
+    pub fn with_system_operation(&mut self, operation: SystemOperation) -> &mut Self {
         self.block.operations.push(operation.into());
         self
     }
