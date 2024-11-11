@@ -137,7 +137,7 @@ impl TestValidator {
     }
 
     /// Returns the locked [`WorkerState`] of this validator.
-    pub(crate) fn worker(&self) -> WorkerState<DbStorage<MemoryStore, TestClock>> {
+    pub fn worker(&self) -> WorkerState<DbStorage<MemoryStore, TestClock>> {
         self.worker.clone()
     }
 

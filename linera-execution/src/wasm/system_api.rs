@@ -403,6 +403,16 @@ where
             .consume_fuel(fuel)
             .map_err(|e| RuntimeError::Custom(e.into()))
     }
+
+    /// Verifies a proof represented as a data blob from storage.
+    fn verify_proof(caller: &mut Caller, hash: CryptoHash) -> Result<Vec<u8>, RuntimeError> {
+        // TODO: wasm-ffi-verification verify proof, only read data blob now
+        caller
+            .user_data_mut()
+            .runtime
+            .read_data_blob(&hash)
+            .map_err(|error| RuntimeError::Custom(error.into()))
+    }
 }
 
 /// An implementation of the system API made available to services.

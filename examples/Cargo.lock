@@ -4399,6 +4399,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "proof-verifier"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "async-graphql",
+ "bcs",
+ "futures",
+ "linera-sdk",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "proptest"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
