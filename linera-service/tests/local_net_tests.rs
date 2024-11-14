@@ -843,9 +843,9 @@ async fn test_end_to_end_proof_verifier(config: LocalNetConfig) -> Result<()> {
         .make_application(&chain, &application_id)
         .await?;
 
-    let verified_proof: bool = application.query_json("verified_proof").await?;
+    let verified_proof: bool = application.query_json("verifiedProof").await?;
     assert!(!verified_proof);
-    let verifying_key: Vec<u8> = application.query_json("verifying_key").await?;
+    let verifying_key: Vec<u8> = application.query_json("verifyingKey").await?;
     assert_eq!(verifying_key, vk_bytes);
 
     let proof_path = env::current_dir()?
@@ -865,12 +865,12 @@ async fn test_end_to_end_proof_verifier(config: LocalNetConfig) -> Result<()> {
     assert_eq!(res_blob_hash, blob_hash);
 
     let mutation = format!(
-        "verify_proof(proof_hash: {})",
+        "verifyProof(proofHash: {})",
         async_graphql::InputType::to_value(&data_blob_hash)
     );
     application.mutate(mutation).await?;
 
-    let verified_proof: bool = application.query_json("value").await?;
+    let verified_proof: bool = application.query_json("verifiedProof").await?;
     assert!(verified_proof);
 
     net.ensure_is_running().await?;
