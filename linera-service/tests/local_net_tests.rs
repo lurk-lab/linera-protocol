@@ -841,7 +841,7 @@ async fn test_end_to_end_proof_verifier(config: LocalNetConfig) -> Result<()> {
 
     let mutation = format!(
         "run(value: {})",
-        async_graphql::InputType::to_value(data_blob_hash)
+        async_graphql::InputType::to_value(&data_blob_hash)
     );
     application.mutate(mutation).await?;
 
