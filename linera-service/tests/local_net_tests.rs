@@ -31,6 +31,7 @@ use linera_service::{
     faucet::ClaimOutcome,
     test_name,
 };
+use std::io::Read;
 use std::os::linux::raw::stat;
 use std::{env, path::PathBuf, time::Duration};
 use test_case::test_case;
@@ -817,8 +818,22 @@ async fn test_end_to_end_proof_verifier(config: LocalNetConfig) -> Result<()> {
     let chain = client.load_wallet()?.default_chain().unwrap();
     let (contract, service) = client.build_example("proof-verifier").await?;
 
+    let vk_path = env::current_dir()?
+        .join("../examples/")
+        .join("proof-verifier/tests/assets/vk.bin");
+    let mut vk_bytes = Vec::new();
+    let vk_size = std::fs::File::open(vk_path)?.read_to_end(&mut vk_bytes)?;
+    assert!(vk_size > 0);
+
     let application_id = client
-        .publish_and_create::<ProofVerifierAbi, (), ()>(contract, service, &(), &(), &[], None)
+        .publish_and_create::<ProofVerifierAbi, (), Vec<u8>>(
+            contract,
+            service,
+            &(),
+            &vk_bytes,
+            &[],
+            None,
+        )
         .await?;
 
     let port = get_node_port().await;
@@ -828,24 +843,35 @@ async fn test_end_to_end_proof_verifier(config: LocalNetConfig) -> Result<()> {
         .make_application(&chain, &application_id)
         .await?;
 
-    let state_value: bool = application.query_json("value").await?;
-    assert!(!state_value);
+    let verified_proof: bool = application.query_json("verified_proof").await?;
+    assert!(!verified_proof);
+    let verifying_key: Vec<u8> = application.query_json("verifying_key").await?;
+    assert_eq!(verifying_key, vk_bytes);
 
-    let blob_hash = CryptoHash::new(&BlobBytes(vec![1, 0, 0, 1]));
+    let proof_path = env::current_dir()?
+        .join("../examples/")
+        .join("proof-verifier/tests/assets/plonk_proof.bin");
+    let mut proof_bytes = Vec::new();
+    let proof_size = std::fs::File::open(proof_path)?.read_to_end(&mut proof_bytes)?;
+    assert!(proof_size > 0);
+
+    let proof_as_blob = BlobBytes(proof_bytes.clone());
+
+    let blob_hash = CryptoHash::new(&proof_as_blob);
     let data_blob_hash = DataBlobHash(blob_hash);
     let res_blob_hash = node_service
-        .publish_data_blob(&chain, vec![1, 0, 0, 1])
+        .publish_data_blob(&chain, proof_as_blob.0)
         .await?;
     assert_eq!(res_blob_hash, blob_hash);
 
     let mutation = format!(
-        "run(value: {})",
+        "verify_proof(proof_hash: {})",
         async_graphql::InputType::to_value(&data_blob_hash)
     );
     application.mutate(mutation).await?;
 
-    let state_value: bool = application.query_json("value").await?;
-    assert!(state_value);
+    let verified_proof: bool = application.query_json("value").await?;
+    assert!(verified_proof);
 
     net.ensure_is_running().await?;
     net.terminate().await?;

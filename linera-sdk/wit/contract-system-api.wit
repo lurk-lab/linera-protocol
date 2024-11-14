@@ -30,7 +30,7 @@ interface contract-system-api {
     assert-data-blob-exists: func(hash: crypto-hash);
     log: func(message: string, level: log-level);
     consume-fuel: func(fuel: u64);
-    verify-proof: func(hash: crypto-hash) -> list<u8>;
+    verify-proof: func(verifying-key: list<u8>, hash: crypto-hash) -> bool;
 
     record account {
         chain-id: chain-id,
