@@ -44,8 +44,9 @@ impl Contract for ProofVerificationContract {
         self.state.value.set(false);
     }
 
-    async fn execute_operation(&mut self, operation: DataBlobHash) -> Self::Response {
-        self.runtime.assert_data_blob_exists(operation.clone());
+    async fn execute_operation(&mut self, proof_hash: DataBlobHash) -> Self::Response {
+        self.runtime.assert_data_blob_exists(proof_hash.clone());
+        self.runtime.verify_proof(proof_hash);
 
         self.state.value.set(true);
     }

@@ -759,6 +759,15 @@ where
         assert_eq!(hash, expected_blob_hash);
         response.expect("Blob does not exist!");
     }
+
+    /// Verifies a proof represented as a data blob from storage.
+    pub fn verify_proof(&mut self, hash: DataBlobHash) -> Vec<u8> {
+        // TODO properly mock verification
+        let maybe_request = self.expected_read_data_blob_requests.pop_front();
+        let (expected_hash, response) = maybe_request.expect("Unexpected read_data_blob request");
+        assert_eq!(*hash, expected_hash);
+        response
+    }
 }
 
 /// A type alias for the handler for cross-application calls.
