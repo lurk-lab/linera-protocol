@@ -8,7 +8,7 @@ mod state;
 use linera_sdk::{
     base::WithContractAbi,
     views::{RootView, View},
-    Contract, ContractRuntime, DataBlobHash, FromBcsBytes,
+    Contract, ContractRuntime, DataBlobHash,
 };
 use proof_verifier::ProofVerifierAbi;
 
@@ -27,7 +27,7 @@ impl WithContractAbi for ProofVerificationContract {
 
 impl Contract for ProofVerificationContract {
     type Message = ();
-    type InstantiationArgument = ();
+    type InstantiationArgument = Vec<u8>;
     type Parameters = ();
 
     async fn load(runtime: ContractRuntime<Self>) -> Self {
@@ -37,18 +37,19 @@ impl Contract for ProofVerificationContract {
         ProofVerificationContract { state, runtime }
     }
 
-    async fn instantiate(&mut self, value: ()) {
+    async fn instantiate(&mut self, value: Vec<u8>) {
         // Validate that the application parameters were configured correctly.
         self.runtime.application_parameters();
 
-        self.state.value.set(false);
+        self.state.verifying_key.set(value);
+        self.state.verified_proof.set(false);
     }
 
     async fn execute_operation(&mut self, proof_hash: DataBlobHash) -> Self::Response {
         self.runtime.assert_data_blob_exists(proof_hash.clone());
-        self.runtime.verify_proof(proof_hash);
-
-        self.state.value.set(true);
+        let vk = self.state.verifying_key.get();
+        let res = self.runtime.verify_proof(vk, proof_hash);
+        self.state.verified_proof.set(res);
     }
 
     async fn execute_message(&mut self, _message: ()) {

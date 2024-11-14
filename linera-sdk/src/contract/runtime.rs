@@ -3,6 +3,8 @@
 
 //! Runtime types to interface with the host executing the contract.
 
+use super::wit::contract_system_api as wit;
+use crate::{Contract, DataBlobHash, KeyValueStore, ViewStorageContext};
 use linera_base::{
     abi::{ContractAbi, ServiceAbi},
     data_types::{
@@ -14,9 +16,6 @@ use linera_base::{
     ownership::{ChainOwnership, CloseChainError},
 };
 use serde::Serialize;
-
-use super::wit::contract_system_api as wit;
-use crate::{Contract, DataBlobHash, KeyValueStore, ViewStorageContext};
 
 /// The common runtime to interface with the host executing the contract.
 ///
@@ -294,9 +293,8 @@ where
     }
 
     /// Verifies a proof represented as a data blob from storage.
-    pub fn verify_proof(&mut self, hash: DataBlobHash) -> Vec<u8> {
-        // TODO: wasm-ffi-verification ensure reads proof for now
-        wit::verify_proof(hash.0.into())
+    pub fn verify_proof(&mut self, verifying_key: &[u8], hash: DataBlobHash) -> bool {
+        wit::verify_proof(verifying_key, hash.0.into())
     }
 }
 

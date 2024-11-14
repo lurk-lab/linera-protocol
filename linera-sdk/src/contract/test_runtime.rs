@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use crate::{Contract, DataBlobHash, KeyValueStore, ViewStorageContext};
 use linera_base::{
     abi::{ContractAbi, ServiceAbi},
     data_types::{
@@ -19,8 +20,6 @@ use linera_base::{
     ownership::{ChainOwnership, CloseChainError},
 };
 use serde::Serialize;
-
-use crate::{Contract, DataBlobHash, KeyValueStore, ViewStorageContext};
 
 /// A mock of the common runtime to interface with the host executing the contract.
 pub struct MockContractRuntime<Application>
@@ -761,12 +760,12 @@ where
     }
 
     /// Verifies a proof represented as a data blob from storage.
-    pub fn verify_proof(&mut self, hash: DataBlobHash) -> Vec<u8> {
+    pub fn verify_proof(&mut self, _verifying_key: &[u8], hash: DataBlobHash) -> bool {
         // TODO properly mock verification
         let maybe_request = self.expected_read_data_blob_requests.pop_front();
-        let (expected_hash, response) = maybe_request.expect("Unexpected read_data_blob request");
+        let (expected_hash, _response) = maybe_request.expect("Unexpected read_data_blob request");
         assert_eq!(hash, expected_hash);
-        response
+        true
     }
 }
 

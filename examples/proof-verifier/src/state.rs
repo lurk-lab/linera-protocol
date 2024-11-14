@@ -3,11 +3,11 @@
 
 use async_graphql::SimpleObject;
 use linera_sdk::views::{linera_views, RegisterView, RootView, ViewStorageContext};
-use linera_sdk::DataBlobHash;
 
 /// The application state.
 #[derive(RootView, SimpleObject)]
 #[view(context = "ViewStorageContext")]
 pub struct ProofVerifierState {
-    pub value: RegisterView<bool>,
+    pub verifying_key: RegisterView<Vec<u8>>,
+    pub verified_proof: RegisterView<bool>,
 }

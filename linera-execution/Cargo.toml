@@ -37,6 +37,7 @@ anyhow.workspace = true
 async-graphql.workspace = true
 async-trait.workspace = true
 bcs.workspace = true
+bincode.workspace = true
 cfg-if.workspace = true
 clap.workspace = true
 custom_debug_derive.workspace = true
@@ -56,6 +57,7 @@ reqwest = { workspace = true, features = ["blocking", "json"] }
 serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
+sphinx-sdk.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, features = ["log"] }
 wasm-encoder = { workspace = true, optional = true }

@@ -1,8 +1,6 @@
 // Copyright (c) Zefchain Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{any::Any, collections::HashMap, marker::PhantomData};
-
 use linera_base::{
     crypto::CryptoHash,
     data_types::{Amount, ApplicationPermissions, BlockHeight, SendMessageRequest, Timestamp},
@@ -11,6 +9,8 @@ use linera_base::{
 };
 use linera_views::batch::{Batch, WriteOperation};
 use linera_witty::{wit_export, Instance, RuntimeError};
+use sphinx_sdk::ProverClient;
+use std::{any::Any, collections::HashMap, marker::PhantomData};
 use tracing::log;
 
 use super::WasmExecutionError;
@@ -405,16 +405,26 @@ where
     }
 
     /// Verifies a proof represented as a data blob from storage.
-    fn verify_proof(caller: &mut Caller, hash: CryptoHash) -> Result<Vec<u8>, RuntimeError> {
-        // TODO: wasm-ffi-verification verify proof, only read data blob now
-        println!("-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------");
-        dbg!("-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------");
+    fn verify_proof(
+        caller: &mut Caller,
+        verifying_key: Vec<u8>,
+        hash: CryptoHash,
+    ) -> Result<bool, RuntimeError> {
+        let prover = ProverClient::new();
 
-        caller
+        let proof_bytes = caller
             .user_data_mut()
             .runtime
             .read_data_blob(&hash)
-            .map_err(|error| RuntimeError::Custom(error.into()))
+            .map_err(|error| RuntimeError::Custom(error.into()))?;
+
+        // TODO standardize serde encoding
+        let verifying_key = bcs::from_reader(verifying_key.as_slice())
+            .map_err(|error| RuntimeError::Custom(error.into()))?;
+        let proof = bincode::deserialize_from(proof_bytes.as_slice())
+            .map_err(|error| RuntimeError::Custom(error.into()))?;
+
+        Ok(prover.verify(&proof, &verifying_key).is_ok())
     }
 }
 

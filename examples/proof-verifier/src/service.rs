@@ -6,7 +6,7 @@
 mod state;
 
 use crate::state::ProofVerifierState;
-use async_graphql::{Data, EmptySubscription, Object, Request, Response, Schema};
+use async_graphql::{EmptySubscription, Object, Request, Response, Schema};
 use linera_sdk::{base::WithServiceAbi, views::View, DataBlobHash, Service, ServiceRuntime};
 
 pub struct ProofVerifierService {
@@ -32,7 +32,8 @@ impl Service for ProofVerifierService {
     async fn handle_query(&self, request: Request) -> Response {
         let schema = Schema::build(
             QueryRoot {
-                value: self.state.value.get().clone(),
+                verifying_key: self.state.verifying_key.get().clone(),
+                verified_proof: self.state.verified_proof.get().clone(),
             },
             MutationRoot {},
             EmptySubscription,
@@ -46,18 +47,22 @@ struct MutationRoot;
 
 #[Object]
 impl MutationRoot {
-    async fn run(&self, value: DataBlobHash) -> Vec<u8> {
-        bcs::to_bytes(&value).unwrap()
+    async fn verify_proof(&self, proof_hash: DataBlobHash) -> Vec<u8> {
+        bcs::to_bytes(&proof_hash).unwrap()
     }
 }
 
 struct QueryRoot {
-    value: bool,
+    verifying_key: Vec<u8>,
+    verified_proof: bool,
 }
 
 #[Object]
 impl QueryRoot {
-    async fn value(&self) -> &bool {
-        &self.value
+    async fn verifying_key(&self) -> &[u8] {
+        &self.verifying_key
+    }
+    async fn verified_proof(&self) -> &bool {
+        &self.verified_proof
     }
 }
