@@ -839,7 +839,10 @@ async fn test_end_to_end_proof_verifier(config: LocalNetConfig) -> Result<()> {
         .await?;
     assert_eq!(res_blob_hash, blob_hash);
 
-    let mutation = format!("run(value: {increment})");
+    let mutation = format!(
+        "run(value: {})",
+        async_graphql::InputType::to_value(data_blob_hash)
+    );
     application.mutate(mutation).await?;
 
     let state_value: bool = application.query_json("value").await?;
