@@ -805,11 +805,14 @@ async fn test_end_to_end_benchmark(mut config: LocalNetConfig) -> Result<()> {
 
 #[cfg_attr(feature = "storage-service", test_case(LocalNetConfig::new_test(Database::Service, Network::Grpc) ; "storage_service_grpc"))]
 #[test_log::test(tokio::test)]
-async fn test_end_to_end_proof_verifier(config: LocalNetConfig) -> Result<()> {
+async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()> {
     use proof_verifier::ProofVerifierAbi;
 
     let _guard = INTEGRATION_TEST_GUARD.lock().await;
     tracing::info!("Starting test {}", test_name!());
+
+    config.policy.maximum_blob_size = u64::MAX;
+    config.policy.maximum_executed_block_size = u64::MAX;
 
     let (mut net, client) = config.instantiate().await?;
 
