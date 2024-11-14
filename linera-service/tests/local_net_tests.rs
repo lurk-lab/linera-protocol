@@ -811,8 +811,12 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
     let _guard = INTEGRATION_TEST_GUARD.lock().await;
     tracing::info!("Starting test {}", test_name!());
 
-    config.policy.maximum_blob_size = u64::MAX;
+    config.policy.maximum_fuel_per_block = u64::MAX;
     config.policy.maximum_executed_block_size = u64::MAX;
+    config.policy.maximum_bytecode_size = u64::MAX;
+    config.policy.maximum_blob_size = u64::MAX;
+    config.policy.maximum_bytes_read_per_block = u64::MAX;
+    config.policy.maximum_bytes_written_per_block = u64::MAX;
 
     let (mut net, client) = config.instantiate().await?;
 
