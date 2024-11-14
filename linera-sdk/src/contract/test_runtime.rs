@@ -765,7 +765,7 @@ where
         // TODO properly mock verification
         let maybe_request = self.expected_read_data_blob_requests.pop_front();
         let (expected_hash, response) = maybe_request.expect("Unexpected read_data_blob request");
-        assert_eq!(*hash, expected_hash);
+        assert_eq!(hash, expected_hash);
         response
     }
 }
