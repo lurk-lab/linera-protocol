@@ -868,7 +868,7 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
     assert_eq!(res_blob_hash, blob_hash);
 
     let mutation = format!(
-        "verifyProof(proofHash: {})",
+        "verify(hash: {})",
         async_graphql::InputType::to_value(&data_blob_hash)
     );
     application.mutate(mutation).await?;
