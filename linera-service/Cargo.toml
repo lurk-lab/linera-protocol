@@ -128,7 +128,7 @@ criterion = { workspace = true, features = ["async_tokio"] }
 crowd-funding.workspace = true
 ethereum-tracker.workspace = true
 fungible.workspace = true
-linera-alloy = { workspace = true, default-features = false, features = [ "rpc-types-eth" ] }
+linera-alloy = { workspace = true, default-features = false, features = ["rpc-types-eth"] }
 linera-base = { workspace = true, features = ["test"] }
 linera-chain = { workspace = true, features = ["test"] }
 linera-client = { workspace = true, features = ["test"] }
@@ -144,6 +144,7 @@ matching-engine.workspace = true
 native-fungible.workspace = true
 non-fungible.workspace = true
 prometheus.workspace = true
+proof-verifier.workspace = true
 proptest.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 social.workspace = true
