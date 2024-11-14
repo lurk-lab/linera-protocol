@@ -12,12 +12,15 @@ mod common;
 
 use anyhow::Result;
 use common::INTEGRATION_TEST_GUARD;
+use linera_base::crypto::CryptoHash;
+use linera_base::data_types::BlobBytes;
 #[cfg(feature = "benchmark")]
 use linera_base::identifiers::AccountOwner;
 use linera_base::{
     data_types::Amount,
     identifiers::{Account, ChainId},
 };
+use linera_sdk::DataBlobHash;
 use linera_service::{
     cli_wrappers::{
         local_net::{
@@ -802,9 +805,7 @@ async fn test_end_to_end_benchmark(mut config: LocalNetConfig) -> Result<()> {
 
 #[cfg_attr(feature = "storage-service", test_case(LocalNetConfig::new_test(Database::Service, Network::Grpc) ; "storage_service_grpc"))]
 #[test_log::test(tokio::test)]
-async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()> {
-    use std::collections::BTreeMap;
-
+async fn test_end_to_end_proof_verifier(config: LocalNetConfig) -> Result<()> {
     use proof_verifier::ProofVerifierAbi;
 
     let _guard = INTEGRATION_TEST_GUARD.lock().await;
@@ -827,6 +828,19 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
     let application = node_service
         .make_application(&chain, &application_id)
         .await?;
+
+    let state_value: bool = application.query_json("value").await?;
+    assert!(!state_value);
+
+    let blob_hash = CryptoHash::new(&BlobBytes(vec![1, 0, 0, 1]));
+    let data_blob_hash = DataBlobHash(blob_hash);
+    let res_blob_hash = node_service
+        .publish_data_blob(&chain, vec![1, 0, 0, 1])
+        .await?;
+    assert_eq!(res_blob_hash, blob_hash);
+
+    let mutation = format!("run(value: {increment})");
+    application.mutate(mutation).await?;
 
     let state_value: bool = application.query_json("value").await?;
     assert!(state_value);
