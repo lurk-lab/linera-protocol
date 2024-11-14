@@ -47,8 +47,8 @@ struct MutationRoot;
 
 #[Object]
 impl MutationRoot {
-    async fn verify_proof(&self, proof_hash: DataBlobHash) -> Vec<u8> {
-        bcs::to_bytes(&proof_hash).unwrap()
+    async fn verify(&self, hash: DataBlobHash) -> Vec<u8> {
+        bcs::to_bytes(&hash).unwrap()
     }
 }
 
