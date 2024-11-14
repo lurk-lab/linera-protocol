@@ -4521,6 +4521,7 @@ dependencies = [
  "pathdiff",
  "port-selector",
  "prometheus",
+ "proof-verifier",
  "proptest",
  "prost",
  "rand",
@@ -5729,6 +5730,17 @@ dependencies = [
  "parking_lot",
  "protobuf",
  "thiserror",
+]
+
+[[package]]
+name = "proof-verifier"
+version = "0.1.0"
+dependencies = [
+ "async-graphql",
+ "bcs",
+ "futures",
+ "linera-sdk",
+ "serde_json",
 ]
 
 [[package]]

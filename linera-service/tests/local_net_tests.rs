@@ -10,8 +10,6 @@
 
 mod common;
 
-use std::{env, path::PathBuf, time::Duration};
-
 use anyhow::Result;
 use common::INTEGRATION_TEST_GUARD;
 #[cfg(feature = "benchmark")]
@@ -30,6 +28,8 @@ use linera_service::{
     faucet::ClaimOutcome,
     test_name,
 };
+use std::os::linux::raw::stat;
+use std::{env, path::PathBuf, time::Duration};
 use test_case::test_case;
 
 #[cfg(feature = "benchmark")]
@@ -792,6 +792,43 @@ async fn test_end_to_end_benchmark(mut config: LocalNetConfig) -> Result<()> {
         )
         .await?;
     client.benchmark(2, 5, 10, Some(application_id)).await?;
+
+    net.ensure_is_running().await?;
+    net.terminate().await?;
+
+    Ok(())
+}
+
+#[cfg_attr(feature = "storage-service", test_case(LocalNetConfig::new_test(Database::Service, Network::Grpc) ; "storage_service_grpc"))]
+#[test_log::test(tokio::test)]
+async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    use proof_verifier::ProofVerifierAbi;
+
+    let _guard = INTEGRATION_TEST_GUARD.lock().await;
+    tracing::info!("Starting test {}", test_name!());
+
+    let (mut net, client) = config.instantiate().await?;
+
+    // Now we run the benchmark again, with the fungible token application instead of the
+    // native token.
+    let chain = client.load_wallet()?.default_chain().unwrap();
+    let (contract, service) = client.build_example("proof-verifier").await?;
+
+    let application_id = client
+        .publish_and_create::<ProofVerifierAbi, (), ()>(contract, service, &(), &(), &[], None)
+        .await?;
+
+    let port = get_node_port().await;
+    let mut node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
+
+    let application = node_service
+        .make_application(&chain, &application_id)
+        .await?;
+
+    let state_value: bool = application.query_json("value").await?;
+    assert!(state_value);
 
     net.ensure_is_running().await?;
     net.terminate().await?;
