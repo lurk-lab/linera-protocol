@@ -47,8 +47,8 @@ impl Contract for ProofVerificationContract {
 
     async fn execute_operation(&mut self, proof_hash: DataBlobHash) -> Self::Response {
         self.runtime.assert_data_blob_exists(proof_hash.clone());
-        /*let vk = self.state.verifying_key.get();
-        let res = self.runtime.verify_proof(vk, proof_hash);*/
+        let vk = self.state.verifying_key.get();
+        let res = self.runtime.verify_proof(vk, proof_hash);
         self.state.verified_proof.set(true);
     }
 
