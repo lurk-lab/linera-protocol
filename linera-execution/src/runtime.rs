@@ -8,6 +8,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use crate::{
+    execution::UserAction,
+    execution_state_actor::{ExecutionRequest, ExecutionStateSender},
+    resources::ResourceController,
+    util::{ReceiverExt, UnboundedSenderExt},
+    BaseRuntime, ContractRuntime, ExecutionError, FinalizeContext, MessageContext,
+    OperationContext, QueryContext, RawExecutionOutcome, ServiceRuntime, TransactionTracker,
+    UserApplicationDescription, UserApplicationId, UserContractInstance, UserServiceInstance,
+    MAX_EVENT_KEY_LEN, MAX_STREAM_NAME_LEN,
+};
 use custom_debug_derive::Debug;
 use linera_base::{
     crypto::CryptoHash,
@@ -24,17 +34,7 @@ use linera_base::{
 };
 use linera_views::batch::Batch;
 use oneshot::Receiver;
-
-use crate::{
-    execution::UserAction,
-    execution_state_actor::{ExecutionRequest, ExecutionStateSender},
-    resources::ResourceController,
-    util::{ReceiverExt, UnboundedSenderExt},
-    BaseRuntime, ContractRuntime, ExecutionError, FinalizeContext, MessageContext,
-    OperationContext, QueryContext, RawExecutionOutcome, ServiceRuntime, TransactionTracker,
-    UserApplicationDescription, UserApplicationId, UserContractInstance, UserServiceInstance,
-    MAX_EVENT_KEY_LEN, MAX_STREAM_NAME_LEN,
-};
+use sphinx_sdk::ProverClient;
 
 #[cfg(test)]
 #[path = "unit_tests/runtime_tests.rs"]
@@ -697,6 +697,14 @@ impl<UserInstance> BaseRuntime for SyncRuntimeHandle<UserInstance> {
     fn assert_data_blob_exists(&mut self, hash: &CryptoHash) -> Result<(), ExecutionError> {
         self.inner().assert_data_blob_exists(hash)
     }
+
+    fn verify_proof(
+        &mut self,
+        vk: Vec<u8>,
+        proof_hash: CryptoHash,
+    ) -> Result<bool, ExecutionError> {
+        self.inner().verify_proof(vk, proof_hash)
+    }
 }
 
 impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
@@ -1023,6 +1031,24 @@ impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
             .send_request(|callback| ExecutionRequest::AssertBlobExists { blob_id, callback })?
             .recv_response()?;
         Ok(())
+    }
+
+    fn verify_proof(
+        &mut self,
+        vk: Vec<u8>,
+        proof_hash: CryptoHash,
+    ) -> Result<bool, ExecutionError> {
+        let prover = ProverClient::new();
+
+        let proof_bytes = self.read_data_blob(&proof_hash)?;
+
+        // TODO standardize serde encoding
+        let verifying_key =
+            bcs::from_reader(vk.as_slice()).map_err(|error| ExecutionError::Bcs(error.into()))?;
+        let proof = bincode::deserialize_from(proof_bytes.as_slice())
+            .map_err(|error| ExecutionError::ServiceWriteAttempt)?;
+
+        Ok(prover.verify(&proof, &verifying_key).is_ok())
     }
 }
 
