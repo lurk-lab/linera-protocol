@@ -872,13 +872,6 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
         .await?;
     assert_eq!(res_blob_hash, blob_hash);
 
-    let port = get_node_port().await;
-    let mut node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
-
-    let application = node_service
-        .make_application(&chain, &application_id)
-        .await?;
-
     let mutation = format!(
         "verify(hash: {})",
         async_graphql::InputType::to_value(&data_blob_hash)
