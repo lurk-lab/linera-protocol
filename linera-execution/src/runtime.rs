@@ -1024,6 +1024,7 @@ impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
     }
 
     fn assert_data_blob_exists(&mut self, hash: &CryptoHash) -> Result<(), ExecutionError> {
+        dbg!("-----------------------------------runtime.rs-------------------------------------------");
         let blob_id = BlobId::new(*hash, BlobType::Data);
         self.transaction_tracker
             .replay_oracle_response(OracleResponse::Blob(blob_id))?;
