@@ -1041,12 +1041,17 @@ impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
         let prover = ProverClient::new();
 
         let proof_bytes = self.read_data_blob(&proof_hash)?;
-
+        dbg!(proof_bytes.len());
+        println!("{}", proof_bytes.len());
         // TODO standardize serde encoding
         let verifying_key =
             bcs::from_reader(vk.as_slice()).map_err(|error| ExecutionError::Bcs(error.into()))?;
         let proof = bincode::deserialize_from(proof_bytes.as_slice())
             .map_err(|error| ExecutionError::ServiceWriteAttempt)?;
+        dbg!(proof_bytes.len());
+        println!("{}", proof_bytes.len());
+
+        dbg!(prover.verify(&proof, &verifying_key).is_ok());
 
         Ok(prover.verify(&proof, &verifying_key).is_ok())
     }
