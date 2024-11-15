@@ -307,6 +307,18 @@ where
                 self.system.assert_blob_exists(blob_id).await?;
                 callback.respond(())
             }
+
+            VerifyProof {
+                verifying_key,
+                proof_blob_id,
+                callback,
+            } => {
+                let is_correct = self
+                    .system
+                    .verify_proof(verifying_key, proof_blob_id)
+                    .await?;
+                callback.respond(is_correct);
+            }
         }
 
         Ok(())
@@ -474,5 +486,12 @@ pub enum ExecutionRequest {
         blob_id: BlobId,
         #[debug(skip)]
         callback: Sender<()>,
+    },
+
+    VerifyProof {
+        verifying_key: Vec<u8>,
+        proof_blob_id: BlobId,
+        #[debug(skip)]
+        callback: Sender<bool>,
     },
 }

@@ -1024,7 +1024,6 @@ impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
     }
 
     fn assert_data_blob_exists(&mut self, hash: &CryptoHash) -> Result<(), ExecutionError> {
-        dbg!("-----------------------------------runtime.rs-------------------------------------------");
         let blob_id = BlobId::new(*hash, BlobType::Data);
         self.transaction_tracker
             .replay_oracle_response(OracleResponse::Blob(blob_id))?;
@@ -1036,26 +1035,23 @@ impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
 
     fn verify_proof(
         &mut self,
-        vk: Vec<u8>,
+        verifying_key: Vec<u8>,
         proof_hash: CryptoHash,
     ) -> Result<bool, ExecutionError> {
-        let prover = ProverClient::new();
-        dbg!("---------------------------------------------------------------");
-        println!("---------------------------------------------------------------");
-        /*        let proof_bytes = self.read_data_blob(&proof_hash)?;
-                dbg!(proof_bytes.len());
-                println!("{}", proof_bytes.len());
-                // TODO standardize serde encoding
-                let verifying_key =
-                    bcs::from_reader(vk.as_slice()).map_err(|error| ExecutionError::Bcs(error.into()))?;
-                let proof = bincode::deserialize_from(proof_bytes.as_slice())
-                    .map_err(|error| ExecutionError::ServiceWriteAttempt)?;
-                dbg!(proof_bytes.len());
-                println!("{}", proof_bytes.len());
-
-                dbg!(prover.verify(&proof, &verifying_key).is_ok());
-        */
-        Ok(self.assert_data_blob_exists(&proof_hash).is_ok())
+        dbg!("-------------------------runtime.rs--------------------------------------");
+        println!("-------------------------------runtime.rs--------------------------------");
+        let proof_blob_id = BlobId::new(proof_hash, BlobType::Data);
+        self.transaction_tracker
+            .replay_oracle_response(OracleResponse::Blob(proof_blob_id))?;
+        let is_correct = self
+            .execution_state_sender
+            .send_request(|callback| ExecutionRequest::VerifyProof {
+                verifying_key,
+                proof_blob_id,
+                callback,
+            })?
+            .recv_response()?;
+        Ok(is_correct)
     }
 }
 
