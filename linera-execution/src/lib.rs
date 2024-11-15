@@ -612,6 +612,10 @@ pub trait BaseRuntime {
 
     /// Asserts the existence of a data blob with the given hash.
     fn assert_data_blob_exists(&mut self, hash: &CryptoHash) -> Result<(), ExecutionError>;
+
+    // Verifies a given proof based on a verification  key
+    fn verify_proof(&mut self, vk: Vec<u8>, proof_hash: CryptoHash)
+        -> Result<bool, ExecutionError>;
 }
 
 pub trait ServiceRuntime: BaseRuntime {

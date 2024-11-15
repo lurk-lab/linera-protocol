@@ -410,21 +410,11 @@ where
         verifying_key: Vec<u8>,
         hash: CryptoHash,
     ) -> Result<bool, RuntimeError> {
-        let prover = ProverClient::new();
-
-        let proof_bytes = caller
+        caller
             .user_data_mut()
             .runtime
-            .read_data_blob(&hash)
-            .map_err(|error| RuntimeError::Custom(error.into()))?;
-
-        // TODO standardize serde encoding
-        let verifying_key = bcs::from_reader(verifying_key.as_slice())
-            .map_err(|error| RuntimeError::Custom(error.into()))?;
-        let proof = bincode::deserialize_from(proof_bytes.as_slice())
-            .map_err(|error| RuntimeError::Custom(error.into()))?;
-
-        Ok(prover.verify(&proof, &verifying_key).is_ok())
+            .verify_proof(verifying_key, hash)
+            .map_err(|error| RuntimeError::Custom(error.into()))
     }
 }
 
