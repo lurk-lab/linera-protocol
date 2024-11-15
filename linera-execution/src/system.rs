@@ -31,7 +31,7 @@ use linera_views::{
     views::{ClonableView, HashableView, View, ViewError},
 };
 use serde::{Deserialize, Serialize};
-use sphinx_sdk::ProverClient;
+use sphinx_sdk::{LocalProver, Prover, ProverClient};
 use thiserror::Error;
 #[cfg(with_metrics)]
 use {linera_base::prometheus_util, prometheus::IntCounterVec};
@@ -1012,7 +1012,7 @@ where
     ) -> Result<bool, SystemExecutionError> {
         dbg!("--------------------------------------System execution view------------------------------------------");
         println!("--------------------------------------System execution view------------------------------------------");
-        let prover = ProverClient::new();
+        let prover = LocalProver::new();
         dbg!("--------------------------------------System execution view------------------------------------------");
         println!("--------------------------------------System execution view------------------------------------------");
         dbg!(prover.version());
