@@ -31,6 +31,7 @@ use linera_views::{
     views::{ClonableView, HashableView, View, ViewError},
 };
 use serde::{Deserialize, Serialize};
+use sphinx_sdk::ProverClient;
 use thiserror::Error;
 #[cfg(with_metrics)]
 use {linera_base::prometheus_util, prometheus::IntCounterVec};
@@ -1002,6 +1003,31 @@ where
         } else {
             Err(SystemExecutionError::BlobsNotFound(vec![blob_id]))
         }
+    }
+
+    pub async fn verify_proof(
+        &mut self,
+        verifying_key: Vec<u8>,
+        proof_blob_id: BlobId,
+    ) -> Result<bool, SystemExecutionError> {
+        dbg!("--------------------------------------System execution view------------------------------------------");
+        println!("--------------------------------------System execution view------------------------------------------");
+        let prover = ProverClient::new();
+        dbg!("--------------------------------------System execution view------------------------------------------");
+        println!("--------------------------------------System execution view------------------------------------------");
+        let proof_bytes = self.read_blob_content(proof_blob_id).await?.inner_bytes();
+        dbg!(proof_bytes.len());
+        println!("{}", proof_bytes.len());
+        // TODO standardize serde encoding
+        let verifying_key = bcs::from_reader(verifying_key.as_slice())
+            .expect("Failed to deserialize verifying key");
+        let proof =
+            bincode::deserialize_from(proof_bytes.as_slice()).expect("Failed to deserialize proof");
+        dbg!(proof_bytes.len());
+        println!("{}", proof_bytes.len());
+
+        dbg!(prover.verify(&proof, &verifying_key).is_ok());
+        Ok(prover.verify(&proof, &verifying_key).is_ok())
     }
 
     async fn check_and_record_bytecode_blobs(
