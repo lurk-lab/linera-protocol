@@ -294,8 +294,6 @@ where
 
     /// Verifies a proof represented as a data blob from storage.
     pub fn verify_proof(&mut self, verifying_key: &[u8], hash: DataBlobHash) -> bool {
-        dbg!("-----------------------------------------------------------------------------");
-        println!("------------------------------------------------------------------------");
         wit::verify_proof(verifying_key, hash.0.into())
     }
 }
