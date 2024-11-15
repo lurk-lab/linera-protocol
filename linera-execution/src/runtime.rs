@@ -1040,6 +1040,7 @@ impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
     ) -> Result<bool, ExecutionError> {
         let prover = ProverClient::new();
         dbg!("---------------------------------------------------------------");
+        println!("---------------------------------------------------------------");
         let proof_bytes = self.read_data_blob(&proof_hash)?;
         dbg!(proof_bytes.len());
         println!("{}", proof_bytes.len());
