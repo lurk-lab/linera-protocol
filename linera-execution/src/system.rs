@@ -1012,9 +1012,10 @@ where
     ) -> Result<bool, SystemExecutionError> {
         dbg!("--------------------------------------System execution view------------------------------------------");
         println!("--------------------------------------System execution view------------------------------------------");
-        //let prover = ProverClient::new();
+        let prover = ProverClient::new();
         dbg!("--------------------------------------System execution view------------------------------------------");
         println!("--------------------------------------System execution view------------------------------------------");
+        dbg!(prover.version());
         /*        let proof_bytes = self.read_blob_content(proof_blob_id).await?.inner_bytes();
         dbg!(proof_bytes.len());
         println!("{}", proof_bytes.len());
