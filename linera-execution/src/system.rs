@@ -31,7 +31,7 @@ use linera_views::{
     views::{ClonableView, HashableView, View, ViewError},
 };
 use serde::{Deserialize, Serialize};
-use sphinx_sdk::{LocalProver, Prover, ProverClient};
+use sphinx_sdk::ProverClient;
 use thiserror::Error;
 #[cfg(with_metrics)]
 use {linera_base::prometheus_util::register_int_counter_vec, prometheus::IntCounterVec};
@@ -1010,13 +1010,11 @@ where
         verifying_key: Vec<u8>,
         proof_blob_id: BlobId,
     ) -> Result<bool, SystemExecutionError> {
-        dbg!("--------------------------------------System execution view------------------------------------------");
-        println!("--------------------------------------System execution view------------------------------------------");
-        let prover = LocalProver::new();
+        let prover = Box::new(ProverClient::new());
         dbg!("--------------------------------------System execution view------------------------------------------");
         println!("--------------------------------------System execution view------------------------------------------");
         dbg!(prover.version());
-        /*        let proof_bytes = self.read_blob_content(proof_blob_id).await?.inner_bytes();
+        let proof_bytes = self.read_blob_content(proof_blob_id).await?.inner_bytes();
         dbg!(proof_bytes.len());
         println!("{}", proof_bytes.len());
         // TODO standardize serde encoding
@@ -1027,9 +1025,8 @@ where
         dbg!(proof_bytes.len());
         println!("{}", proof_bytes.len());
 
-        dbg!(prover.verify(&proof, &verifying_key).is_ok());*/
-        //Ok(prover.verify(&proof, &verifying_key).is_ok())
-        Ok(true)
+        dbg!(prover.verify(&proof, &verifying_key).is_ok());
+        Ok(prover.verify(&proof, &verifying_key).is_ok())
     }
 
     async fn check_and_record_bytecode_blobs(
