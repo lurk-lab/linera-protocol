@@ -232,12 +232,14 @@ where
         );
         self.0.storage.clock().sleep_until(block.timestamp).await;
         let local_time = self.0.storage.clock().current_time();
+        dbg!("---------------------------------------------------------execute block-------------------------------------------------------------------------------");
         let outcome = Box::pin(self.0.chain.execute_block(
             block,
             local_time,
             forced_oracle_responses.clone(),
         ))
         .await?;
+        dbg!("---------------------------------------------------------block executed-------------------------------------------------------------------------------");
         if let Some(lite_certificate) = &validated_block_certificate {
             let value = HashedCertificateValue::new_validated(outcome.clone().with(block.clone()));
             lite_certificate
