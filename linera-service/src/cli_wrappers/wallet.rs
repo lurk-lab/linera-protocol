@@ -1578,13 +1578,13 @@ impl<A> ApplicationWrapper<A> {
     pub async fn raw_query(&self, query: impl AsRef<str>) -> Result<Value> {
         const MAX_RETRIES: usize = 5;
 
-        for i in 0.. {
+        for i in 0..MAX_RETRIES {
             let query = query.as_ref();
             let client = reqwest_client();
             let result = client
                 .post(&self.uri)
                 .json(&json!({ "query": query }))
-                .timeout(Duration::from_secs(2000000000000000000000000))
+                .timeout(Duration::from_secs(18446744073709551615))
                 .send()
                 .await;
             let response = match result {
