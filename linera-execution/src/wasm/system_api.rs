@@ -410,8 +410,6 @@ where
         verifying_key: Vec<u8>,
         hash: CryptoHash,
     ) -> Result<bool, RuntimeError> {
-        dbg!("11111111111111111111111111111111111111111111111111111111111");
-        println!("11111111111111111111111111111111111111111111111111111111111");
         caller
             .user_data_mut()
             .runtime

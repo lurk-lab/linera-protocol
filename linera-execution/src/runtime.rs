@@ -1038,8 +1038,6 @@ impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
         verifying_key: Vec<u8>,
         proof_hash: CryptoHash,
     ) -> Result<bool, ExecutionError> {
-        dbg!("-------------------------runtime.rs--------------------------------------");
-        println!("-------------------------------runtime.rs--------------------------------");
         let proof_blob_id = BlobId::new(proof_hash, BlobType::Data);
         self.transaction_tracker
             .replay_oracle_response(OracleResponse::Blob(proof_blob_id))?;

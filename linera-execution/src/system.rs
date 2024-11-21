@@ -1011,21 +1011,13 @@ where
         proof_blob_id: BlobId,
     ) -> Result<bool, SystemExecutionError> {
         let prover = Box::new(ProverClient::new());
-        dbg!("--------------------------------------System execution view------------------------------------------");
-        println!("--------------------------------------System execution view------------------------------------------");
-        dbg!(prover.version());
         let proof_bytes = self.read_blob_content(proof_blob_id).await?.inner_bytes();
-        dbg!(proof_bytes.len());
-        println!("{}", proof_bytes.len());
         // TODO standardize serde encoding
         let verifying_key = bcs::from_reader(verifying_key.as_slice())
             .expect("Failed to deserialize verifying key");
         let proof =
             bincode::deserialize_from(proof_bytes.as_slice()).expect("Failed to deserialize proof");
-        dbg!(proof_bytes.len());
-        println!("{}", proof_bytes.len());
 
-        dbg!(prover.verify(&proof, &verifying_key).is_ok());
         Ok(prover.verify(&proof, &verifying_key).is_ok())
     }
 
