@@ -241,6 +241,7 @@ where
         while let Some(request) = incoming_requests.recv().await {
             // TODO(#2237): Spawn concurrent tasks for read-only operations
             trace!("Handling `ChainWorkerRequest`: {request:?}");
+            let request_str = format!("{:?}", request);
 
             let responded = match request {
                 #[cfg(with_testing)]
@@ -335,7 +336,7 @@ where
             };
 
             if !responded {
-                warn!("Was handling `ChainWorkerRequest`: {request:?}");
+                warn!("Was handling `ChainWorkerRequest`: {request_str}");
                 warn!("Callback for `ChainWorkerActor` was dropped before a response was sent");
             }
         }
