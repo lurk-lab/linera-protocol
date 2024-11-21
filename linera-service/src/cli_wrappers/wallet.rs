@@ -1584,6 +1584,7 @@ impl<A> ApplicationWrapper<A> {
             let result = client
                 .post(&self.uri)
                 .json(&json!({ "query": query }))
+                .timeout(Duration::from_secs(2000000000000000000000000))
                 .send()
                 .await;
             let response = match result {
