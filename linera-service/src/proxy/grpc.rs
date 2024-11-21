@@ -251,6 +251,8 @@ where
             .await;
         let internal_server = join_set.spawn_task(
             Server::builder()
+                .timeout(Duration::from_secs(20000000000000))
+                .http2_keepalive_timeout(Some(Duration::from_secs(2000)))
                 .add_service(self.as_notifier_service())
                 .serve(self.internal_address())
                 .in_current_span(),
@@ -265,6 +267,8 @@ where
                         .layer(PrometheusMetricsMiddlewareLayer)
                         .into_inner(),
                 )
+                .timeout(Duration::from_secs(20000000000000))
+                .http2_keepalive_timeout(Some(Duration::from_secs(2000)))
                 .accept_http1(true)
                 .add_service(health_service)
                 .add_service(tonic_web::enable(self.as_validator_node()))
