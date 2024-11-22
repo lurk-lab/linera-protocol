@@ -850,6 +850,8 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
         .make_application(&chain, &application_id)
         .await?;
 
+    tracing::info!("Deploy proof verifier contract {}", test_name!());
+
     let verified_proof: bool = application.query_json("verifiedProof").await?;
     assert!(!verified_proof);
     let verifying_key: Vec<u8> = application.query_json("verifyingKey").await?;
@@ -871,14 +873,21 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
         .await?;
     assert_eq!(res_blob_hash, blob_hash);
 
+    tracing::info!("Published proof as blob with hash {}", res_blob_hash);
+
     let mutation = format!(
         "verify(hash: {})",
         async_graphql::InputType::to_value(&data_blob_hash)
     );
-    application.mutate(mutation).await?;
+    let result = application.mutate(mutation).await?;
+    dbg!(result.as_str());
+
+    tracing::info!("Transaction to verify proof successfully sent and executed!");
 
     let verified_proof: bool = application.query_json("verifiedProof").await?;
     assert!(verified_proof);
+
+    tracing::info!("Contract got succesfully updated!");
 
     net.ensure_is_running().await?;
     net.terminate().await?;

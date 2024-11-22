@@ -204,12 +204,11 @@ where
         &mut self,
         proposal: BlockProposal,
     ) -> Result<(ChainInfoResponse, NetworkActions), WorkerError> {
-        dbg!("-----------------------validate-----------------------");
         let validation_outcome = ChainWorkerStateWithTemporaryChanges::new(self)
             .await
             .validate_block(&proposal)
             .await?;
-        dbg!("-----------------------vote-----------------------");
+
         let actions = if let Some((outcome, local_time)) = validation_outcome {
             ChainWorkerStateWithAttemptedChanges::new(&mut *self)
                 .await
@@ -221,9 +220,9 @@ where
             // If we just processed the same pending block, return the chain info unchanged.
             NetworkActions::default()
         };
-        dbg!("-----------------------info-----------------------");
+
         let info = ChainInfoResponse::new(&self.chain, self.config.key_pair());
-        dbg!("-----------------------return-----------------------");
+
         Ok((info, actions))
     }
 
