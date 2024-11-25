@@ -1013,8 +1013,7 @@ where
         dbg!("------------------------------verify prooof -------------------------------------");
         let prover = Box::new(ProverClient::new());
         let proof_bytes = self.read_blob_content(proof_blob_id).await?.inner_bytes();
-        // TODO standardize serde encoding
-        let verifying_key = bcs::from_reader(verifying_key.as_slice())
+        let verifying_key = bincode::deserialize_from(verifying_key.as_slice())
             .expect("Failed to deserialize verifying key");
         let proof =
             bincode::deserialize_from(proof_bytes.as_slice()).expect("Failed to deserialize proof");
