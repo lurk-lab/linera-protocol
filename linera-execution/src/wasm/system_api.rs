@@ -9,7 +9,6 @@ use linera_base::{
 };
 use linera_views::batch::{Batch, WriteOperation};
 use linera_witty::{wit_export, Instance, RuntimeError};
-use sphinx_sdk::ProverClient;
 use std::{any::Any, collections::HashMap, marker::PhantomData};
 use tracing::log;
 

@@ -34,7 +34,6 @@ use linera_base::{
 };
 use linera_views::batch::Batch;
 use oneshot::Receiver;
-use sphinx_sdk::ProverClient;
 
 #[cfg(test)]
 #[path = "unit_tests/runtime_tests.rs"]
