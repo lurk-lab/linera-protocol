@@ -1010,6 +1010,7 @@ where
         verifying_key: Vec<u8>,
         proof_blob_id: BlobId,
     ) -> Result<bool, SystemExecutionError> {
+        dbg!("------------------------------verify prooof -------------------------------------");
         let prover = Box::new(ProverClient::new());
         let proof_bytes = self.read_blob_content(proof_blob_id).await?.inner_bytes();
         // TODO standardize serde encoding
