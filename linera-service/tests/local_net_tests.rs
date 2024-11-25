@@ -906,7 +906,7 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
     net.ensure_is_running().await?;
     net.terminate().await?;
 
-    tracing::info!(
+    println!(
         "Time taken to execute proof verification mutation {}",
         mutation_time.as_millis()
     );
