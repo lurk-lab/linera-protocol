@@ -829,7 +829,7 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
 
     let vk_path = env::current_dir()?
         .join("../examples/")
-        .join("proof-verifier/tests/assets/vk.bin");
+        .join("proof-verifier/tests/assets/vk_is_prime.bin");
     let mut vk_bytes = Vec::new();
     let vk_size = std::fs::File::open(vk_path)?.read_to_end(&mut vk_bytes)?;
     assert!(vk_size > 0);
@@ -861,7 +861,7 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
 
     let proof_path = env::current_dir()?
         .join("../examples/")
-        .join("proof-verifier/tests/assets/sphinx_snark.bin");
+        .join("proof-verifier/tests/assets/sp1_stark.bin");
     let mut proof_bytes = Vec::new();
     let proof_size = std::fs::File::open(proof_path)?.read_to_end(&mut proof_bytes)?;
     assert!(proof_size > 0);

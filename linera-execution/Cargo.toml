@@ -57,7 +57,7 @@ reqwest = { workspace = true, features = ["blocking", "json"] }
 serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
-sphinx-sdk.workspace = true
+sp1-sdk.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, features = ["log"] }
 wasm-encoder = { workspace = true, optional = true }

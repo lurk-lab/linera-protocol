@@ -31,7 +31,7 @@ use linera_views::{
     views::{ClonableView, HashableView, View, ViewError},
 };
 use serde::{Deserialize, Serialize};
-use sphinx_sdk::ProverClient;
+use sp1_sdk::ProverClient;
 use thiserror::Error;
 #[cfg(with_metrics)]
 use {linera_base::prometheus_util::register_int_counter_vec, prometheus::IntCounterVec};
