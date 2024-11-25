@@ -20,6 +20,7 @@ use linera_base::{
     data_types::Amount,
     identifiers::{Account, ChainId},
 };
+use linera_sdk::contract::wit::contract_system_api::application_parameters;
 use linera_sdk::DataBlobHash;
 use linera_service::{
     cli_wrappers::{
@@ -33,6 +34,7 @@ use linera_service::{
 };
 use std::io::Read;
 use std::os::linux::raw::stat;
+use std::time::Instant;
 use std::{env, path::PathBuf, time::Duration};
 use test_case::test_case;
 
@@ -844,7 +846,7 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
         .await?;
 
     let port = get_node_port().await;
-    let mut node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
+    let node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
 
     let application = node_service
         .make_application(&chain, &application_id)
@@ -859,7 +861,7 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
 
     let proof_path = env::current_dir()?
         .join("../examples/")
-        .join("proof-verifier/tests/assets/plonk_proof.bin");
+        .join("proof-verifier/tests/assets/sphinx_snark.bin");
     let mut proof_bytes = Vec::new();
     let proof_size = std::fs::File::open(proof_path)?.read_to_end(&mut proof_bytes)?;
     assert!(proof_size > 0);
@@ -879,8 +881,20 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
         "verify(hash: {})",
         async_graphql::InputType::to_value(&data_blob_hash)
     );
-    let result = application.mutate(mutation).await?;
-    dbg!(result.as_str());
+    let start_mutation = Instant::now();
+    let block_hash = application
+        .mutate(mutation)
+        .await?
+        .as_str()
+        .expect("Couldn't convert block hash to string")
+        .to_string();
+    let mutation_time = start_mutation.elapsed();
+
+    let res = node_service
+        .query_node(format!(
+            "query {{ block(hash:\"{block_hash}\",chainId:\"{chain}\") {{ hash }}  }}"
+        ))
+        .await?;
 
     tracing::info!("Transaction to verify proof successfully sent and executed!");
 
@@ -891,6 +905,11 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
 
     net.ensure_is_running().await?;
     net.terminate().await?;
+
+    tracing::info!(
+        "Time taken to execute proof verification mutation {}",
+        mutation_time.as_millis()
+    );
 
     Ok(())
 }
