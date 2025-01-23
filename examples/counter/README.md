@@ -1,11 +1,9 @@
-<!-- cargo-rdme start -->
-
 # Counter Example Application
 
 This example application implements a simple counter contract, it is initialized with an
 unsigned integer that can be increased by the `increment` operation.
 
-# How It Works
+## How It Works
 
 It is a very basic Linera application, which is initialized by a `u64` which can be incremented
 by a `u64`.
@@ -14,9 +12,9 @@ For example if the contract was initialized with 1, querying the contract would 
 `increment` it by 3, we will have to perform an operation with the parameter being 3. Now querying the
 application would give us 4 (1+3 = 4).
 
-# Usage
+## Usage
 
-## Setting Up
+### Setting Up
 
 Before getting started, make sure that the binary tools `linera*` corresponding to
 your version of `linera-sdk` are in your PATH. For scripting purposes, we also assume
@@ -55,7 +53,7 @@ APPLICATION_ID=$(linera publish-and-create \
 
 We have saved the `APPLICATION_ID` as it will be useful later.
 
-## Using the Counter Application
+### Using the Counter Application
 
 First, a node service for the current wallet has to be started:
 
@@ -64,27 +62,27 @@ PORT=8080
 linera service --port $PORT &
 ```
 
-### Using GraphiQL
+#### Using GraphiQL
 
 Type each of these in the GraphiQL interface and substitute the env variables with their actual values that we've defined above.
 
 - Navigate to the URL you get by running `echo "http://localhost:8080/chains/$CHAIN_1/applications/$APPLICATION_ID"`.
 - To get the current value of `counter`, run the query:
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APPLICATION_ID
-    query {
-        value
-    }
+query {
+  value
+}
 ```
 - To increase the value of the counter by 3, perform the `increment` operation.
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APPLICATION_ID
-    mutation Increment {
-        increment(value: 3)
-    }
+mutation Increment {
+  increment(value: 3)
+}
 ```
 - Running the query again would yield `4`.
 
 
-### Using web frontend
+#### Using web frontend
 
 Installing and starting the web server:
 
@@ -92,7 +90,7 @@ Installing and starting the web server:
 cd examples/counter/web-frontend
 npm install --no-save
 
-# Start the server but not open the web page right away.
+# Start the server but do not open the web page right away.
 BROWSER=none npm start &
 ```
 
@@ -108,5 +106,3 @@ The following command will print the URL of the web UI:
 ```bash
 echo "http://localhost:3000/$CHAIN_1?app=$APPLICATION_ID&owner=$OWNER_1&port=$PORT"
 ```
-
-<!-- cargo-rdme end -->

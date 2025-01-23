@@ -189,7 +189,7 @@ pub struct GenesisConfig {
     pub network_name: String,
 }
 
-impl BcsSignable for GenesisConfig {}
+impl<'de> BcsSignable<'de> for GenesisConfig {}
 
 impl GenesisConfig {
     pub fn new(
@@ -221,7 +221,7 @@ impl GenesisConfig {
                     committee.clone(),
                     self.admin_id,
                     description,
-                    *public_key,
+                    public_key.into(),
                     *balance,
                     self.timestamp,
                 )

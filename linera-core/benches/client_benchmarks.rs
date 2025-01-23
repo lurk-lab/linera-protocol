@@ -2,18 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use criterion::{criterion_group, criterion_main, measurement::Measurement, BatchSize, Criterion};
-use linera_base::{
-    data_types::Amount,
-    identifiers::{Account, ChainDescription},
-    time::Duration,
-};
+use linera_base::{data_types::Amount, identifiers::Account, time::Duration};
 use linera_core::{
     client,
     test_utils::{MemoryStorageBuilder, NodeProvider, StorageBuilder, TestBuilder},
 };
 use linera_execution::system::Recipient;
 use linera_storage::{
-    READ_CERTIFICATE_COUNTER, READ_HASHED_CERTIFICATE_VALUE_COUNTER, WRITE_CERTIFICATE_COUNTER,
+    READ_CERTIFICATE_COUNTER, READ_HASHED_CONFIRMED_BLOCK_COUNTER, WRITE_CERTIFICATE_COUNTER,
 };
 use linera_views::metrics::{LOAD_VIEW_COUNTER, SAVE_VIEW_COUNTER};
 use prometheus::core::Collector;
@@ -40,13 +36,10 @@ where
     futures::executor::block_on(async move {
         let mut builder = TestBuilder::new(storage_builder, 4, 1).await.unwrap();
         let chain1 = builder
-            .add_initial_chain(ChainDescription::Root(1), Amount::from_tokens(10))
+            .add_root_chain(1, Amount::from_tokens(10))
             .await
             .unwrap();
-        let chain2 = builder
-            .add_initial_chain(ChainDescription::Root(2), Amount::ZERO)
-            .await
-            .unwrap();
+        let chain2 = builder.add_root_chain(2, Amount::ZERO).await.unwrap();
         (chain1, chain2)
     })
 }
@@ -117,7 +110,7 @@ criterion_group!(
     config = Criterion::default()
         .measurement_time(Duration::from_secs(40))
         .with_measurement(BenchRecorderMeasurement::new(vec![
-            READ_HASHED_CERTIFICATE_VALUE_COUNTER.desc()[0].fq_name.as_str(),
+            READ_HASHED_CONFIRMED_BLOCK_COUNTER.desc()[0].fq_name.as_str(),
             READ_CERTIFICATE_COUNTER.desc()[0].fq_name.as_str(), WRITE_CERTIFICATE_COUNTER.desc()[0].fq_name.as_str(),
             LOAD_VIEW_COUNTER.desc()[0].fq_name.as_str(), SAVE_VIEW_COUNTER.desc()[0].fq_name.as_str(),
         ]));

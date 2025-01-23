@@ -20,6 +20,7 @@ pub mod crypto;
 pub mod data_types;
 pub mod dyn_convert;
 mod graphql;
+pub mod hashed;
 pub mod identifiers;
 mod limited_writer;
 pub mod ownership;
@@ -29,6 +30,8 @@ pub mod port;
 pub mod prometheus_util;
 #[cfg(not(chain))]
 pub mod task;
+#[cfg(not(chain))]
+pub use task::Blocking;
 pub mod time;
 #[cfg_attr(web, path = "tracing_web.rs")]
 pub mod tracing;

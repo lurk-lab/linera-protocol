@@ -20,10 +20,7 @@ use async_graphql::Request;
 use counter::CounterAbi;
 use linera_base::{
     data_types::{Amount, Bytecode, OracleResponse, UserApplicationDescription},
-    identifiers::{
-        AccountOwner, ApplicationId, ChainDescription, ChainId, Destination, Owner, StreamId,
-        StreamName,
-    },
+    identifiers::{AccountOwner, ApplicationId, Destination, Owner, StreamId, StreamName},
     ownership::{ChainOwnership, TimeoutConfig},
 };
 use linera_chain::data_types::{EventRecord, MessageAction, OutgoingMessage};
@@ -109,12 +106,8 @@ where
     let mut builder = TestBuilder::new(storage_builder, 4, 1)
         .await?
         .with_policy(policy.clone());
-    let publisher = builder
-        .add_initial_chain(ChainDescription::Root(0), Amount::from_tokens(3))
-        .await?;
-    let creator = builder
-        .add_initial_chain(ChainDescription::Root(1), Amount::ONE)
-        .await?;
+    let publisher = builder.add_root_chain(0, Amount::from_tokens(3)).await?;
+    let creator = builder.add_root_chain(1, Amount::ONE).await?;
 
     let (bytecode_id, _cert) = publisher
         .publish_bytecode(contract_bytecode, service_bytecode)
@@ -247,25 +240,19 @@ where
         .await?
         .with_policy(ResourceControlPolicy::all_categories());
     // Will publish the bytecodes.
-    let publisher = builder
-        .add_initial_chain(ChainDescription::Root(0), Amount::from_tokens(3))
-        .await?;
+    let publisher = builder.add_root_chain(0, Amount::from_tokens(3)).await?;
     // Will create the apps and use them to send a message.
-    let creator = builder
-        .add_initial_chain(ChainDescription::Root(1), Amount::ONE)
-        .await?;
+    let creator = builder.add_root_chain(1, Amount::ONE).await?;
     // Will receive the message.
-    let receiver = builder
-        .add_initial_chain(ChainDescription::Root(2), Amount::ONE)
-        .await?;
-    let receiver_id = ChainId::root(2);
+    let receiver = builder.add_root_chain(2, Amount::ONE).await?;
+    let receiver_id = receiver.chain_id();
 
     // Handling the message causes an oracle request to the counter service, so no fast blocks
     // are allowed.
     let receiver_key = receiver.public_key().await.unwrap();
     receiver
         .change_ownership(ChainOwnership::multiple(
-            [(receiver_key, 100)],
+            [(receiver_key.into(), 100)],
             100,
             TimeoutConfig::default(),
         ))
@@ -274,7 +261,7 @@ where
     let creator_key = creator.public_key().await.unwrap();
     creator
         .change_ownership(ChainOwnership::multiple(
-            [(creator_key, 100)],
+            [(creator_key.into(), 100)],
             100,
             TimeoutConfig::default(),
         ))
@@ -328,7 +315,7 @@ where
         .unwrap()
         .unwrap();
     assert_eq!(
-        certificate.executed_block().outcome.events,
+        certificate.block().body.events,
         vec![
             Vec::new(),
             vec![EventRecord {
@@ -350,8 +337,8 @@ where
         .await
         .unwrap()
         .unwrap();
-    let executed_block = cert.executed_block();
-    let responses = &executed_block.outcome.oracle_responses;
+    let executed_block = cert.block();
+    let responses = &executed_block.body.oracle_responses;
     let [_, responses] = &responses[..] else {
         panic!("Unexpected oracle responses: {:?}", responses);
     };
@@ -399,14 +386,14 @@ where
     let mut certs = receiver.process_inbox().await.unwrap().0;
     assert_eq!(certs.len(), 1);
     let cert = certs.pop().unwrap();
-    let incoming_bundles = &cert.executed_block().block.incoming_bundles;
+    let incoming_bundles = &cert.block().body.incoming_bundles;
     assert_eq!(incoming_bundles.len(), 1);
     assert_eq!(incoming_bundles[0].action, MessageAction::Reject);
     assert_eq!(
         incoming_bundles[0].bundle.messages[0].kind,
         MessageKind::Simple
     );
-    let messages = cert.executed_block().messages();
+    let messages = cert.block().messages();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].len(), 0);
 
@@ -426,7 +413,7 @@ where
     let mut certs = receiver.process_inbox().await.unwrap().0;
     assert_eq!(certs.len(), 1);
     let cert = certs.pop().unwrap();
-    let incoming_bundles = &cert.executed_block().block.incoming_bundles;
+    let incoming_bundles = &cert.block().body.incoming_bundles;
     assert_eq!(incoming_bundles.len(), 1);
     assert_eq!(incoming_bundles[0].action, MessageAction::Reject);
     assert_eq!(
@@ -437,7 +424,7 @@ where
         incoming_bundles[0].bundle.messages[1].kind,
         MessageKind::Tracked
     );
-    let messages = cert.executed_block().messages();
+    let messages = cert.block().messages();
     assert_eq!(messages.len(), 1);
 
     // The bounced message is marked as "bouncing" in the Wasm context and succeeds.
@@ -448,7 +435,7 @@ where
     let mut certs = creator.process_inbox().await.unwrap().0;
     assert_eq!(certs.len(), 1);
     let cert = certs.pop().unwrap();
-    let incoming_bundles = &cert.executed_block().block.incoming_bundles;
+    let incoming_bundles = &cert.block().body.incoming_bundles;
     assert_eq!(incoming_bundles.len(), 2);
     // First message is the grant refund for the successful message sent before.
     assert_eq!(incoming_bundles[0].action, MessageAction::Accept);
@@ -524,18 +511,10 @@ where
     let mut builder = TestBuilder::new(storage_builder, 4, 1)
         .await?
         .with_policy(ResourceControlPolicy::all_categories());
-    let _admin = builder
-        .add_initial_chain(ChainDescription::Root(0), Amount::ONE)
-        .await?;
-    let sender = builder
-        .add_initial_chain(ChainDescription::Root(1), Amount::from_tokens(3))
-        .await?;
-    let receiver = builder
-        .add_initial_chain(ChainDescription::Root(2), Amount::ONE)
-        .await?;
-    let receiver2 = builder
-        .add_initial_chain(ChainDescription::Root(3), Amount::ONE)
-        .await?;
+    let _admin = builder.add_root_chain(0, Amount::ONE).await?;
+    let sender = builder.add_root_chain(1, Amount::from_tokens(3)).await?;
+    let receiver = builder.add_root_chain(2, Amount::ONE).await?;
+    let receiver2 = builder.add_root_chain(3, Amount::ONE).await?;
 
     let (bytecode_id, _pub_cert) = {
         let bytecode_name = "fungible";
@@ -581,7 +560,7 @@ where
         .unwrap()
         .unwrap();
 
-    let messages = cert.executed_block().messages();
+    let messages = cert.block().messages();
     {
         let OutgoingMessage {
             destination,
@@ -605,7 +584,7 @@ where
         .unwrap();
     let certs = receiver.process_inbox().await.unwrap().0;
     assert_eq!(certs.len(), 1);
-    let messages = &certs[0].executed_block().block.incoming_bundles;
+    let messages = &certs[0].block().body.incoming_bundles;
     assert!(messages.iter().any(|msg| matches!(
         &msg.bundle.messages[0].message,
         Message::System(SystemMessage::RegisterApplications { applications })
@@ -637,7 +616,7 @@ where
         .unwrap();
     let certs = receiver.process_inbox().await.unwrap().0;
     assert_eq!(certs.len(), 1);
-    let messages = &certs[0].executed_block().block.incoming_bundles;
+    let messages = &certs[0].block().body.incoming_bundles;
     assert!(messages
         .iter()
         .flat_map(|msg| &msg.bundle.messages)
@@ -733,12 +712,8 @@ where
     let mut builder = TestBuilder::new(storage_builder, 4, 1)
         .await?
         .with_policy(ResourceControlPolicy::all_categories());
-    let sender = builder
-        .add_initial_chain(ChainDescription::Root(0), Amount::ONE)
-        .await?;
-    let receiver = builder
-        .add_initial_chain(ChainDescription::Root(1), Amount::ONE)
-        .await?;
+    let sender = builder.add_root_chain(0, Amount::ONE).await?;
+    let receiver = builder.add_root_chain(1, Amount::ONE).await?;
 
     let (bytecode_id, _pub_cert) = {
         let (contract_path, service_path) =
@@ -798,7 +773,7 @@ where
     assert_eq!(certs.len(), 1);
 
     // There should be a message receiving the new post.
-    let messages = &certs[0].executed_block().block.incoming_bundles;
+    let messages = &certs[0].block().body.incoming_bundles;
     assert!(messages
         .iter()
         .any(|msg| matches!(&msg.bundle.messages[0].message, Message::User { .. })));
@@ -889,9 +864,7 @@ async fn test_memory_fuel_limit(wasm_runtime: WasmRuntime) -> anyhow::Result<()>
                 maximum_fuel_per_block: 30_000,
                 ..ResourceControlPolicy::default()
             });
-    let publisher = builder
-        .add_initial_chain(ChainDescription::Root(0), Amount::from_tokens(3))
-        .await?;
+    let publisher = builder.add_root_chain(0, Amount::from_tokens(3)).await?;
 
     let (contract_path, service_path) =
         linera_execution::wasm_test::get_example_bytecode_paths("counter")?;

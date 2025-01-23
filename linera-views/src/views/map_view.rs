@@ -37,9 +37,8 @@ static MAP_VIEW_HASH_RUNTIME: LazyLock<HistogramVec> = LazyLock::new(|| {
 });
 
 use std::{
-    borrow::Borrow,
+    borrow::{Borrow, Cow},
     collections::{btree_map::Entry, BTreeMap},
-    fmt::Debug,
     marker::PhantomData,
     mem,
 };
@@ -65,6 +64,40 @@ pub struct ByteMapView<C, V> {
     context: C,
     deletion_set: DeletionSet,
     updates: BTreeMap<Vec<u8>, Update<V>>,
+}
+
+/// Whether we have a value or its serialization.
+enum ValueOrBytes<'a, T> {
+    /// The value itself.
+    Value(&'a T),
+    /// The serialization.
+    Bytes(Vec<u8>),
+}
+
+impl<'a, T> ValueOrBytes<'a, T>
+where
+    T: Clone + DeserializeOwned,
+{
+    /// Convert to a Cow.
+    fn to_value(&self) -> Result<Cow<'a, T>, ViewError> {
+        match self {
+            ValueOrBytes::Value(value) => Ok(Cow::Borrowed(value)),
+            ValueOrBytes::Bytes(bytes) => Ok(Cow::Owned(bcs::from_bytes(bytes)?)),
+        }
+    }
+}
+
+impl<'a, T> ValueOrBytes<'a, T>
+where
+    T: Serialize,
+{
+    /// Convert to bytes.
+    pub fn into_bytes(self) -> Result<Vec<u8>, ViewError> {
+        match self {
+            ValueOrBytes::Value(value) => Ok(bcs::to_bytes(value)?),
+            ValueOrBytes::Bytes(bytes) => Ok(bytes),
+        }
+    }
 }
 
 #[async_trait]
@@ -365,7 +398,7 @@ impl<C, V> ByteMapView<C, V>
 where
     C: Context,
     ViewError: From<C::Error>,
-    V: Sync + Serialize + DeserializeOwned + 'static,
+    V: Clone + Serialize + DeserializeOwned + 'static,
 {
     /// Applies the function f on each index (aka key) which has the assigned prefix.
     /// Keys are visited in the lexicographic order. The shortened key is send to the
@@ -576,6 +609,75 @@ where
         Ok(count)
     }
 
+    /// Applies a function f on each key/value pair matching a prefix. The key is the
+    /// shortened one by the prefix. The value is an enum that can be either a value
+    /// or its serialization. This is needed in order to avoid a scenario where we
+    /// deserialize something that was serialized. The key/value are send to the
+    /// function f. If it returns false the loop ends prematurely. Keys and values
+    /// are visited in the lexicographic order.
+    async fn for_each_key_value_or_bytes_while<'a, F>(
+        &'a self,
+        mut f: F,
+        prefix: Vec<u8>,
+    ) -> Result<(), ViewError>
+    where
+        F: FnMut(&[u8], ValueOrBytes<'a, V>) -> Result<bool, ViewError> + Send,
+    {
+        let prefix_len = prefix.len();
+        let mut updates = self.updates.range(get_interval(prefix.clone()));
+        let mut update = updates.next();
+        if !self.deletion_set.contains_prefix_of(&prefix) {
+            let iter = self
+                .deletion_set
+                .deleted_prefixes
+                .range(get_interval(prefix.clone()));
+            let mut suffix_closed_set = SuffixClosedSetIterator::new(prefix_len, iter);
+            let base = self.context.base_index(&prefix);
+            for entry in self
+                .context
+                .find_key_values_by_prefix(&base)
+                .await?
+                .into_iterator_owned()
+            {
+                let (index, bytes) = entry?;
+                loop {
+                    match update {
+                        Some((key, value)) if key[prefix_len..] <= *index => {
+                            if let Update::Set(value) = value {
+                                let value = ValueOrBytes::Value(value);
+                                if !f(&key[prefix_len..], value)? {
+                                    return Ok(());
+                                }
+                            }
+                            update = updates.next();
+                            if key[prefix_len..] == index {
+                                break;
+                            }
+                        }
+                        _ => {
+                            if !suffix_closed_set.find_key(&index) {
+                                let value = ValueOrBytes::Bytes(bytes);
+                                if !f(&index, value)? {
+                                    return Ok(());
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        while let Some((key, value)) = update {
+            if let Update::Set(value) = value {
+                let value = ValueOrBytes::Value(value);
+                if !f(&key[prefix_len..], value)? {
+                    return Ok(());
+                }
+            }
+            update = updates.next();
+        }
+        Ok(())
+    }
     /// Applies a function f on each index/value pair matching a prefix. Keys
     /// and values are visited in the lexicographic order. The shortened index
     /// is send to the function f and if it returns false then the loop ends
@@ -604,65 +706,45 @@ where
     /// assert_eq!(part_keys.len(), 2);
     /// # })
     /// ```
-    pub async fn for_each_key_value_while<F>(
-        &self,
+    pub async fn for_each_key_value_while<'a, F>(
+        &'a self,
         mut f: F,
         prefix: Vec<u8>,
     ) -> Result<(), ViewError>
     where
-        F: FnMut(&[u8], &[u8]) -> Result<bool, ViewError> + Send,
+        F: FnMut(&[u8], Cow<'a, V>) -> Result<bool, ViewError> + Send,
     {
-        let prefix_len = prefix.len();
-        let mut updates = self.updates.range(get_interval(prefix.clone()));
-        let mut update = updates.next();
-        if !self.deletion_set.contains_prefix_of(&prefix) {
-            let iter = self
-                .deletion_set
-                .deleted_prefixes
-                .range(get_interval(prefix.clone()));
-            let mut suffix_closed_set = SuffixClosedSetIterator::new(prefix_len, iter);
-            let base = self.context.base_index(&prefix);
-            for entry in self
-                .context
-                .find_key_values_by_prefix(&base)
-                .await?
-                .iterator()
-            {
-                let (index, bytes) = entry?;
-                loop {
-                    match update {
-                        Some((key, value)) if &key[prefix_len..] <= index => {
-                            if let Update::Set(value) = value {
-                                let bytes = bcs::to_bytes(value)?;
-                                if !f(&key[prefix_len..], &bytes)? {
-                                    return Ok(());
-                                }
-                            }
-                            update = updates.next();
-                            if &key[prefix_len..] == index {
-                                break;
-                            }
-                        }
-                        _ => {
-                            if !suffix_closed_set.find_key(index) && !f(index, bytes)? {
-                                return Ok(());
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        while let Some((key, value)) = update {
-            if let Update::Set(value) = value {
-                let bytes = bcs::to_bytes(value)?;
-                if !f(&key[prefix_len..], &bytes)? {
-                    return Ok(());
-                }
-            }
-            update = updates.next();
-        }
-        Ok(())
+        self.for_each_key_value_or_bytes_while(
+            |key, value| {
+                let value = value.to_value()?;
+                f(key, value)
+            },
+            prefix,
+        )
+        .await
+    }
+
+    /// Applies a function f on each key/value pair matching a prefix. The key is the
+    /// shortened one by the prefix. The value is an enum that can be either a value
+    /// or its serialization. This is needed in order to avoid a scenario where we
+    /// deserialize something that was serialized. The key/value are send to the
+    /// function f. Keys and values are visited in the lexicographic order.
+    async fn for_each_key_value_or_bytes<'a, F>(
+        &'a self,
+        mut f: F,
+        prefix: Vec<u8>,
+    ) -> Result<(), ViewError>
+    where
+        F: FnMut(&[u8], ValueOrBytes<'a, V>) -> Result<(), ViewError> + Send,
+    {
+        self.for_each_key_value_or_bytes_while(
+            |key, value| {
+                f(key, value)?;
+                Ok(true)
+            },
+            prefix,
+        )
+        .await
     }
 
     /// Applies a function f on each key/value pair matching a prefix. The shortened
@@ -690,9 +772,13 @@ where
     /// assert_eq!(count, 1);
     /// # })
     /// ```
-    pub async fn for_each_key_value<F>(&self, mut f: F, prefix: Vec<u8>) -> Result<(), ViewError>
+    pub async fn for_each_key_value<'a, F>(
+        &'a self,
+        mut f: F,
+        prefix: Vec<u8>,
+    ) -> Result<(), ViewError>
     where
-        F: FnMut(&[u8], &[u8]) -> Result<(), ViewError> + Send,
+        F: FnMut(&[u8], Cow<'a, V>) -> Result<(), ViewError> + Send,
     {
         self.for_each_key_value_while(
             |key, value| {
@@ -709,7 +795,7 @@ impl<C, V> ByteMapView<C, V>
 where
     C: Context,
     ViewError: From<C::Error>,
-    V: Sync + Send + Serialize + DeserializeOwned + 'static,
+    V: Clone + Send + Serialize + DeserializeOwned + 'static,
 {
     /// Returns the list of keys and values of the map matching a prefix
     /// in lexicographic order.
@@ -736,9 +822,9 @@ where
         let prefix_copy = prefix.clone();
         self.for_each_key_value(
             |key, value| {
-                let value = bcs::from_bytes(value)?;
                 let mut big_key = prefix.clone();
                 big_key.extend(key);
+                let value = value.into_owned();
                 key_values.push((big_key, value));
                 Ok(())
             },
@@ -836,13 +922,14 @@ where
         #[cfg(with_metrics)]
         let _hash_latency = MAP_VIEW_HASH_RUNTIME.measure_latency();
         let mut hasher = sha3::Sha3_256::default();
-        let mut count = 0;
+        let mut count = 0u32;
         let prefix = Vec::new();
-        self.for_each_key_value(
+        self.for_each_key_value_or_bytes(
             |index, value| {
                 count += 1;
                 hasher.update_with_bytes(index)?;
-                hasher.update_with_bytes(value)?;
+                let bytes = value.into_bytes()?;
+                hasher.update_with_bytes(&bytes)?;
                 Ok(())
             },
             prefix,
@@ -866,7 +953,7 @@ impl<C, I, V> View<C> for MapView<C, I, V>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Serialize,
+    I: Sync,
     V: Send + Sync + Serialize,
 {
     const NUM_INIT_KEYS: usize = ByteMapView::<C, V>::NUM_INIT_KEYS;
@@ -912,7 +999,7 @@ impl<C, I, V> ClonableView<C> for MapView<C, I, V>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Serialize,
+    I: Sync,
     V: Clone + Send + Sync + Serialize,
 {
     fn clone_unchecked(&mut self) -> Result<Self, ViewError> {
@@ -1068,8 +1155,8 @@ impl<C, I, V> MapView<C, I, V>
 where
     C: Context + Sync,
     ViewError: From<C::Error>,
-    I: Sync + Send + Serialize + DeserializeOwned,
-    V: Sync + Serialize + DeserializeOwned + 'static,
+    I: Send + DeserializeOwned,
+    V: Clone + Sync + Serialize + DeserializeOwned + 'static,
 {
     /// Returns the list of indices in the map. The order is determined by serialization.
     /// ```rust
@@ -1193,16 +1280,15 @@ where
     /// assert_eq!(values.len(), 2);
     /// # })
     /// ```
-    pub async fn for_each_index_value_while<F>(&self, mut f: F) -> Result<(), ViewError>
+    pub async fn for_each_index_value_while<'a, F>(&'a self, mut f: F) -> Result<(), ViewError>
     where
-        F: FnMut(I, V) -> Result<bool, ViewError> + Send,
+        F: FnMut(I, Cow<'a, V>) -> Result<bool, ViewError> + Send,
     {
         let prefix = Vec::new();
         self.map
             .for_each_key_value_while(
-                |key, bytes| {
+                |key, value| {
                     let index = C::deserialize_value(key)?;
-                    let value = C::deserialize_value(bytes)?;
                     f(index, value)
                 },
                 prefix,
@@ -1231,22 +1317,73 @@ where
     /// assert_eq!(count, 1);
     /// # })
     /// ```
-    pub async fn for_each_index_value<F>(&self, mut f: F) -> Result<(), ViewError>
+    pub async fn for_each_index_value<'a, F>(&'a self, mut f: F) -> Result<(), ViewError>
     where
-        F: FnMut(I, V) -> Result<(), ViewError> + Send,
+        F: FnMut(I, Cow<'a, V>) -> Result<(), ViewError> + Send,
     {
         let prefix = Vec::new();
         self.map
             .for_each_key_value(
-                |key, bytes| {
+                |key, value| {
                     let index = C::deserialize_value(key)?;
-                    let value = C::deserialize_value(bytes)?;
                     f(index, value)
                 },
                 prefix,
             )
             .await?;
         Ok(())
+    }
+}
+
+impl<C, I, V> MapView<C, I, V>
+where
+    C: Context + Sync,
+    ViewError: From<C::Error>,
+    I: Send + DeserializeOwned,
+    V: Clone + Sync + Send + Serialize + DeserializeOwned + 'static,
+{
+    /// Obtains all the `(index,value)` pairs.
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::create_test_memory_context;
+    /// # use linera_views::map_view::MapView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut map: MapView<_, String, _> = MapView::load(context).await.unwrap();
+    /// map.insert("Italian", String::from("Ciao"));
+    /// let index_values = map.index_values().await.unwrap();
+    /// assert_eq!(
+    ///     index_values,
+    ///     vec![("Italian".to_string(), "Ciao".to_string())]
+    /// );
+    /// # })
+    /// ```
+    pub async fn index_values(&self) -> Result<Vec<(I, V)>, ViewError> {
+        let mut key_values = Vec::new();
+        self.for_each_index_value(|index, value| {
+            let value = value.into_owned();
+            key_values.push((index, value));
+            Ok(())
+        })
+        .await?;
+        Ok(key_values)
+    }
+
+    /// Obtains the number of entries in the map
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::create_test_memory_context;
+    /// # use linera_views::map_view::MapView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut map: MapView<_, String, _> = MapView::load(context).await.unwrap();
+    /// map.insert("Italian", String::from("Ciao"));
+    /// map.insert("French", String::from("Bonjour"));
+    /// assert_eq!(map.count().await.unwrap(), 2);
+    /// # })
+    /// ```
+    pub async fn count(&self) -> Result<usize, ViewError> {
+        self.map.count().await
     }
 }
 
@@ -1512,8 +1649,8 @@ impl<C, I, V> CustomMapView<C, I, V>
 where
     C: Context + Sync,
     ViewError: From<C::Error>,
-    I: Sync + Send + CustomSerialize,
-    V: Sync + Serialize + DeserializeOwned + 'static,
+    I: Send + CustomSerialize,
+    V: Clone + Serialize + DeserializeOwned + 'static,
 {
     /// Returns the list of indices in the map. The order is determined
     /// by the custom serialization.
@@ -1640,16 +1777,15 @@ where
     /// assert_eq!(values.len(), 2);
     /// # })
     /// ```
-    pub async fn for_each_index_value_while<F>(&self, mut f: F) -> Result<(), ViewError>
+    pub async fn for_each_index_value_while<'a, F>(&'a self, mut f: F) -> Result<(), ViewError>
     where
-        F: FnMut(I, V) -> Result<bool, ViewError> + Send,
+        F: FnMut(I, Cow<'a, V>) -> Result<bool, ViewError> + Send,
     {
         let prefix = Vec::new();
         self.map
             .for_each_key_value_while(
-                |key, bytes| {
+                |key, value| {
                     let index = I::from_custom_bytes(key)?;
-                    let value = C::deserialize_value(bytes)?;
                     f(index, value)
                 },
                 prefix,
@@ -1679,22 +1815,73 @@ where
     /// assert_eq!(indices, vec![34, 37]);
     /// # })
     /// ```
-    pub async fn for_each_index_value<F>(&self, mut f: F) -> Result<(), ViewError>
+    pub async fn for_each_index_value<'a, F>(&'a self, mut f: F) -> Result<(), ViewError>
     where
-        F: FnMut(I, V) -> Result<(), ViewError> + Send,
+        F: FnMut(I, Cow<'a, V>) -> Result<(), ViewError> + Send,
     {
         let prefix = Vec::new();
         self.map
             .for_each_key_value(
-                |key, bytes| {
+                |key, value| {
                     let index = I::from_custom_bytes(key)?;
-                    let value = C::deserialize_value(bytes)?;
                     f(index, value)
                 },
                 prefix,
             )
             .await?;
         Ok(())
+    }
+}
+
+impl<C, I, V> CustomMapView<C, I, V>
+where
+    C: Context + Sync,
+    ViewError: From<C::Error>,
+    I: Send + CustomSerialize,
+    V: Clone + Sync + Send + Serialize + DeserializeOwned + 'static,
+{
+    /// Obtains all the `(index,value)` pairs.
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::create_test_memory_context;
+    /// # use linera_views::map_view::MapView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut map: MapView<_, String, _> = MapView::load(context).await.unwrap();
+    /// map.insert("Italian", String::from("Ciao"));
+    /// let index_values = map.index_values().await.unwrap();
+    /// assert_eq!(
+    ///     index_values,
+    ///     vec![("Italian".to_string(), "Ciao".to_string())]
+    /// );
+    /// # })
+    /// ```
+    pub async fn index_values(&self) -> Result<Vec<(I, V)>, ViewError> {
+        let mut key_values = Vec::new();
+        self.for_each_index_value(|index, value| {
+            let value = value.into_owned();
+            key_values.push((index, value));
+            Ok(())
+        })
+        .await?;
+        Ok(key_values)
+    }
+
+    /// Obtains the number of entries in the map
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::create_test_memory_context;
+    /// # use linera_views::map_view::MapView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut map: MapView<_, String, _> = MapView::load(context).await.unwrap();
+    /// map.insert("Italian", String::from("Ciao"));
+    /// map.insert("French", String::from("Bonjour"));
+    /// assert_eq!(map.count().await.unwrap(), 2);
+    /// # })
+    /// ```
+    pub async fn count(&self) -> Result<usize, ViewError> {
+        self.map.count().await
     }
 }
 
@@ -1723,7 +1910,7 @@ where
     pub async fn get_mut_or_default<Q>(&mut self, index: &Q) -> Result<&mut V, ViewError>
     where
         I: Borrow<Q>,
-        Q: Sync + Send + Serialize + CustomSerialize,
+        Q: Send + CustomSerialize,
     {
         let short_key = index.to_custom_bytes()?;
         self.map.get_mut_or_default(&short_key).await

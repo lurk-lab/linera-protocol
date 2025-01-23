@@ -9,7 +9,7 @@ use linera_base::{
 };
 use linera_chain::{
     data_types::{BlockProposal, LiteVote},
-    types::{Certificate, CertificateValue, ConfirmedBlockCertificate},
+    types::{ConfirmedBlock, ConfirmedBlockCertificate},
 };
 use linera_core::{
     data_types::{ChainInfoQuery, ChainInfoResponse, CrossChainRequest},
@@ -18,22 +18,29 @@ use linera_core::{
 use linera_version::VersionInfo;
 use serde::{Deserialize, Serialize};
 
-use crate::{HandleCertificateRequest, HandleLiteCertRequest};
+use crate::{
+    HandleConfirmedCertificateRequest, HandleLiteCertRequest, HandleTimeoutCertificateRequest,
+    HandleValidatedCertificateRequest,
+};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[cfg_attr(with_testing, derive(Eq, PartialEq))]
 pub enum RpcMessage {
     // Inbound
     BlockProposal(Box<BlockProposal>),
-    Certificate(Box<HandleCertificateRequest>),
+    TimeoutCertificate(Box<HandleTimeoutCertificateRequest>),
+    ValidatedCertificate(Box<HandleValidatedCertificateRequest>),
+    ConfirmedCertificate(Box<HandleConfirmedCertificateRequest>),
     LiteCertificate(Box<HandleLiteCertRequest<'static>>),
     ChainInfoQuery(Box<ChainInfoQuery>),
-    DownloadBlobContent(Box<BlobId>),
-    DownloadCertificateValue(Box<CryptoHash>),
-    DownloadCertificate(Box<CryptoHash>),
-    DownloadCertificates(Box<Vec<CryptoHash>>),
+    UploadBlob(Box<BlobContent>),
+    DownloadBlob(Box<BlobId>),
+    DownloadPendingBlob(Box<(ChainId, BlobId)>),
+    HandlePendingBlob(Box<(ChainId, BlobContent)>),
+    DownloadConfirmedBlock(Box<CryptoHash>),
+    DownloadCertificates(Vec<CryptoHash>),
     BlobLastUsedBy(Box<BlobId>),
-    MissingBlobIds(Box<Vec<BlobId>>),
+    MissingBlobIds(Vec<BlobId>),
     VersionInfoQuery,
     GenesisConfigHashQuery,
 
@@ -43,12 +50,13 @@ pub enum RpcMessage {
     Error(Box<NodeError>),
     VersionInfoResponse(Box<VersionInfo>),
     GenesisConfigHashResponse(Box<CryptoHash>),
-    DownloadBlobContentResponse(Box<BlobContent>),
-    DownloadCertificateValueResponse(Box<CertificateValue>),
-    DownloadCertificateResponse(Box<Certificate>),
-    DownloadCertificatesResponse(Box<Vec<Certificate>>),
+    UploadBlobResponse(Box<BlobId>),
+    DownloadBlobResponse(Box<BlobContent>),
+    DownloadPendingBlobResponse(Box<BlobContent>),
+    DownloadConfirmedBlockResponse(Box<ConfirmedBlock>),
+    DownloadCertificatesResponse(Vec<ConfirmedBlockCertificate>),
     BlobLastUsedByResponse(Box<CryptoHash>),
-    MissingBlobIdsResponse(Box<Vec<BlobId>>),
+    MissingBlobIdsResponse(Vec<BlobId>),
 
     // Internal to a validator
     CrossChainRequest(Box<CrossChainRequest>),
@@ -64,9 +72,13 @@ impl RpcMessage {
         let chain_id = match self {
             BlockProposal(proposal) => proposal.content.block.chain_id,
             LiteCertificate(request) => request.certificate.value.chain_id,
-            Certificate(request) => request.certificate.inner().chain_id(),
+            TimeoutCertificate(request) => request.certificate.inner().chain_id(),
+            ValidatedCertificate(request) => request.certificate.inner().chain_id(),
+            ConfirmedCertificate(request) => request.certificate.inner().chain_id(),
             ChainInfoQuery(query) => query.chain_id,
             CrossChainRequest(request) => request.target_chain_id(),
+            DownloadPendingBlob(request) => request.0,
+            HandlePendingBlob(request) => request.0,
             Vote(_)
             | Error(_)
             | ChainInfoResponse(_)
@@ -74,17 +86,18 @@ impl RpcMessage {
             | VersionInfoResponse(_)
             | GenesisConfigHashQuery
             | GenesisConfigHashResponse(_)
-            | DownloadBlobContent(_)
-            | DownloadBlobContentResponse(_)
-            | DownloadCertificateValue(_)
-            | DownloadCertificateValueResponse(_)
-            | DownloadCertificate(_)
+            | UploadBlob(_)
+            | UploadBlobResponse(_)
+            | DownloadBlob(_)
+            | DownloadBlobResponse(_)
+            | DownloadPendingBlobResponse(_)
+            | DownloadConfirmedBlock(_)
+            | DownloadConfirmedBlockResponse(_)
             | DownloadCertificates(_)
             | BlobLastUsedBy(_)
             | BlobLastUsedByResponse(_)
             | MissingBlobIds(_)
             | MissingBlobIdsResponse(_)
-            | DownloadCertificateResponse(_)
             | DownloadCertificatesResponse(_) => {
                 return None;
             }
@@ -93,7 +106,7 @@ impl RpcMessage {
         Some(chain_id)
     }
 
-    /// Wether this messsage is "local" i.e. will be executed locally on the proxy
+    /// Whether this message is "local" i.e. will be executed locally on the proxy
     /// or if it'll be proxied to the server.
     pub fn is_local_message(&self) -> bool {
         use RpcMessage::*;
@@ -101,15 +114,17 @@ impl RpcMessage {
         match self {
             VersionInfoQuery
             | GenesisConfigHashQuery
-            | DownloadBlobContent(_)
-            | DownloadCertificateValue(_)
+            | UploadBlob(_)
+            | DownloadBlob(_)
+            | DownloadConfirmedBlock(_)
             | BlobLastUsedBy(_)
             | MissingBlobIds(_)
-            | DownloadCertificate(_)
             | DownloadCertificates(_) => true,
             BlockProposal(_)
             | LiteCertificate(_)
-            | Certificate(_)
+            | TimeoutCertificate(_)
+            | ValidatedCertificate(_)
+            | ConfirmedCertificate(_)
             | ChainInfoQuery(_)
             | CrossChainRequest(_)
             | Vote(_)
@@ -117,11 +132,14 @@ impl RpcMessage {
             | ChainInfoResponse(_)
             | VersionInfoResponse(_)
             | GenesisConfigHashResponse(_)
-            | DownloadBlobContentResponse(_)
-            | DownloadCertificateValueResponse(_)
+            | UploadBlobResponse(_)
+            | DownloadPendingBlob(_)
+            | DownloadPendingBlobResponse(_)
+            | HandlePendingBlob(_)
+            | DownloadBlobResponse(_)
+            | DownloadConfirmedBlockResponse(_)
             | BlobLastUsedByResponse(_)
             | MissingBlobIdsResponse(_)
-            | DownloadCertificateResponse(_)
             | DownloadCertificatesResponse(_) => false,
         }
     }
@@ -153,40 +171,30 @@ impl TryFrom<RpcMessage> for BlobContent {
     type Error = NodeError;
     fn try_from(message: RpcMessage) -> Result<Self, Self::Error> {
         match message {
-            RpcMessage::DownloadBlobContentResponse(blob) => Ok(*blob),
+            RpcMessage::DownloadBlobResponse(blob)
+            | RpcMessage::DownloadPendingBlobResponse(blob) => Ok(*blob),
             RpcMessage::Error(error) => Err(*error),
             _ => Err(NodeError::UnexpectedMessage),
         }
     }
 }
 
-impl TryFrom<RpcMessage> for CertificateValue {
+impl TryFrom<RpcMessage> for ConfirmedBlock {
     type Error = NodeError;
     fn try_from(message: RpcMessage) -> Result<Self, Self::Error> {
         match message {
-            RpcMessage::DownloadCertificateValueResponse(certificate) => Ok(*certificate),
+            RpcMessage::DownloadConfirmedBlockResponse(certificate) => Ok(*certificate),
             RpcMessage::Error(error) => Err(*error),
             _ => Err(NodeError::UnexpectedMessage),
         }
     }
 }
 
-impl TryFrom<RpcMessage> for Certificate {
+impl TryFrom<RpcMessage> for Vec<ConfirmedBlockCertificate> {
     type Error = NodeError;
     fn try_from(message: RpcMessage) -> Result<Self, Self::Error> {
         match message {
-            RpcMessage::DownloadCertificateResponse(certificate) => Ok(*certificate),
-            RpcMessage::Error(error) => Err(*error),
-            _ => Err(NodeError::UnexpectedMessage),
-        }
-    }
-}
-
-impl TryFrom<RpcMessage> for Vec<Certificate> {
-    type Error = NodeError;
-    fn try_from(message: RpcMessage) -> Result<Self, Self::Error> {
-        match message {
-            RpcMessage::DownloadCertificatesResponse(certificates) => Ok(*certificates),
+            RpcMessage::DownloadCertificatesResponse(certificates) => Ok(certificates),
             RpcMessage::Error(error) => Err(*error),
             _ => Err(NodeError::UnexpectedMessage),
         }
@@ -209,107 +217,26 @@ impl TryFrom<RpcMessage> for Vec<BlobId> {
     type Error = NodeError;
     fn try_from(message: RpcMessage) -> Result<Self, Self::Error> {
         match message {
-            RpcMessage::MissingBlobIds(blob_ids) => Ok(*blob_ids),
+            RpcMessage::MissingBlobIdsResponse(blob_ids) => Ok(blob_ids),
             RpcMessage::Error(error) => Err(*error),
             _ => Err(NodeError::UnexpectedMessage),
         }
     }
 }
 
-impl From<BlockProposal> for RpcMessage {
-    fn from(block_proposal: BlockProposal) -> Self {
-        RpcMessage::BlockProposal(Box::new(block_proposal))
-    }
-}
-
-impl From<HandleLiteCertRequest<'static>> for RpcMessage {
-    fn from(request: HandleLiteCertRequest<'static>) -> Self {
-        RpcMessage::LiteCertificate(Box::new(request))
-    }
-}
-
-impl From<HandleCertificateRequest> for RpcMessage {
-    fn from(request: HandleCertificateRequest) -> Self {
-        RpcMessage::Certificate(Box::new(request))
-    }
-}
-
-impl From<Vec<CryptoHash>> for RpcMessage {
-    fn from(hashes: Vec<CryptoHash>) -> Self {
-        RpcMessage::DownloadCertificates(Box::new(hashes))
-    }
-}
-
-impl From<ChainInfoQuery> for RpcMessage {
-    fn from(chain_info_query: ChainInfoQuery) -> Self {
-        RpcMessage::ChainInfoQuery(Box::new(chain_info_query))
-    }
-}
-
-impl From<LiteVote> for RpcMessage {
-    fn from(vote: LiteVote) -> Self {
-        RpcMessage::Vote(Box::new(vote))
-    }
-}
-
-impl From<ChainInfoResponse> for RpcMessage {
-    fn from(chain_info_response: ChainInfoResponse) -> Self {
-        RpcMessage::ChainInfoResponse(Box::new(chain_info_response))
+impl TryFrom<RpcMessage> for BlobId {
+    type Error = NodeError;
+    fn try_from(message: RpcMessage) -> Result<Self, Self::Error> {
+        match message {
+            RpcMessage::UploadBlobResponse(blob_id) => Ok(*blob_id),
+            RpcMessage::Error(error) => Err(*error),
+            _ => Err(NodeError::UnexpectedMessage),
+        }
     }
 }
 
 impl From<NodeError> for RpcMessage {
     fn from(error: NodeError) -> Self {
         RpcMessage::Error(Box::new(error))
-    }
-}
-
-impl From<CrossChainRequest> for RpcMessage {
-    fn from(cross_chain_request: CrossChainRequest) -> Self {
-        RpcMessage::CrossChainRequest(Box::new(cross_chain_request))
-    }
-}
-
-impl From<VersionInfo> for RpcMessage {
-    fn from(version_info: VersionInfo) -> Self {
-        RpcMessage::VersionInfoResponse(Box::new(version_info))
-    }
-}
-
-impl From<BlobContent> for RpcMessage {
-    fn from(blob: BlobContent) -> Self {
-        RpcMessage::DownloadBlobContentResponse(Box::new(blob))
-    }
-}
-
-impl From<CertificateValue> for RpcMessage {
-    fn from(certificate: CertificateValue) -> Self {
-        RpcMessage::DownloadCertificateValueResponse(Box::new(certificate))
-    }
-}
-
-impl From<Certificate> for RpcMessage {
-    fn from(certificate: Certificate) -> Self {
-        RpcMessage::DownloadCertificateResponse(Box::new(certificate))
-    }
-}
-
-impl From<ConfirmedBlockCertificate> for RpcMessage {
-    fn from(certificate: ConfirmedBlockCertificate) -> Self {
-        RpcMessage::DownloadCertificateResponse(Box::new(certificate.into()))
-    }
-}
-
-impl From<Vec<Certificate>> for RpcMessage {
-    fn from(certificates: Vec<Certificate>) -> Self {
-        RpcMessage::DownloadCertificatesResponse(Box::new(certificates))
-    }
-}
-
-impl From<Vec<ConfirmedBlockCertificate>> for RpcMessage {
-    fn from(certificates: Vec<ConfirmedBlockCertificate>) -> Self {
-        RpcMessage::DownloadCertificatesResponse(Box::new(
-            certificates.into_iter().map(|c| c.into()).collect(),
-        ))
     }
 }

@@ -15,7 +15,7 @@ use futures::{
     future::BoxFuture,
     FutureExt as _, StreamExt,
 };
-use linera_base::identifiers::ChainId;
+use linera_base::{data_types::Blob, identifiers::ChainId};
 use linera_core::{
     node::NodeError,
     worker::{NetworkActions, Notification, WorkerError, WorkerState},
@@ -42,14 +42,16 @@ use super::{
         notifier_service_client::NotifierServiceClient,
         validator_worker_client::ValidatorWorkerClient,
         validator_worker_server::{ValidatorWorker as ValidatorWorkerRpc, ValidatorWorkerServer},
-        BlockProposal, ChainInfoQuery, ChainInfoResult, CrossChainRequest, LiteCertificate,
+        BlockProposal, ChainInfoQuery, ChainInfoResult, CrossChainRequest,
+        HandlePendingBlobRequest, LiteCertificate, PendingBlobRequest, PendingBlobResult,
     },
     pool::GrpcConnectionPool,
     GrpcError, GRPC_MAX_MESSAGE_SIZE,
 };
 use crate::{
     config::{CrossChainConfig, NotificationConfig, ShardId, ValidatorInternalNetworkConfig},
-    HandleCertificateRequest, HandleLiteCertRequest,
+    HandleConfirmedCertificateRequest, HandleLiteCertRequest, HandleTimeoutCertificateRequest,
+    HandleValidatedCertificateRequest,
 };
 
 type CrossChainSender = mpsc::Sender<(linera_core::data_types::CrossChainRequest, ShardId)>;
@@ -430,7 +432,15 @@ impl<S> ValidatorWorkerRpc for GrpcServer<S>
 where
     S: Storage + Clone + Send + Sync + 'static,
 {
-    #[instrument(target = "grpc_server", skip_all, err, fields(nickname = self.state.nickname(), chain_id = ?request.get_ref().chain_id()))]
+    #[instrument(
+        target = "grpc_server",
+        skip_all,
+        err,
+        fields(
+            nickname = self.state.nickname(),
+            chain_id = ?request.get_ref().chain_id()
+        )
+    )]
     async fn handle_block_proposal(
         &self,
         request: Request<BlockProposal>,
@@ -459,7 +469,15 @@ where
         ))
     }
 
-    #[instrument(target = "grpc_server", skip_all, err, fields(nickname = self.state.nickname(), chain_id = ?request.get_ref().chain_id()))]
+    #[instrument(
+        target = "grpc_server",
+        skip_all,
+        err,
+        fields(
+            nickname = self.state.nickname(),
+            chain_id = ?request.get_ref().chain_id()
+        )
+    )]
     async fn handle_lite_certificate(
         &self,
         request: Request<LiteCertificate>,
@@ -504,15 +522,22 @@ where
         }
     }
 
-    #[instrument(target = "grpc_server", skip_all, err, fields(nickname = self.state.nickname(), chain_id = ?request.get_ref().chain_id()))]
-    async fn handle_certificate(
+    #[instrument(
+        target = "grpc_server",
+        skip_all,
+        err,
+        fields(
+            nickname = self.state.nickname(),
+            chain_id = ?request.get_ref().chain_id()
+        )
+    )]
+    async fn handle_confirmed_certificate(
         &self,
-        request: Request<api::HandleCertificateRequest>,
+        request: Request<api::HandleConfirmedCertificateRequest>,
     ) -> Result<Response<ChainInfoResult>, Status> {
         let start = Instant::now();
-        let HandleCertificateRequest {
+        let HandleConfirmedCertificateRequest {
             certificate,
-            blobs,
             wait_for_outgoing_messages,
         } = request.into_inner().try_into()?;
         trace!(?certificate, "Handling certificate");
@@ -520,11 +545,11 @@ where
         match self
             .state
             .clone()
-            .handle_certificate(certificate, blobs, sender)
+            .handle_confirmed_certificate(certificate, sender)
             .await
         {
             Ok((info, actions)) => {
-                Self::log_request_success_and_latency(start, "handle_certificate");
+                Self::log_request_success_and_latency(start, "handle_confirmed_certificate");
                 self.handle_network_actions(actions);
                 if let Some(receiver) = receiver {
                     if let Err(e) = receiver.await {
@@ -537,16 +562,103 @@ where
                 #[cfg(with_metrics)]
                 {
                     SERVER_REQUEST_ERROR
-                        .with_label_values(&["handle_certificate"])
+                        .with_label_values(&["handle_confirmed_certificate"])
                         .inc();
                 }
-                error!(nickname = self.state.nickname(), %error, "Failed to handle certificate");
+                error!(nickname = self.state.nickname(), %error, "Failed to handle confirmed certificate");
                 Ok(Response::new(NodeError::from(error).try_into()?))
             }
         }
     }
 
-    #[instrument(target = "grpc_server", skip_all, err, fields(nickname = self.state.nickname(), chain_id = ?request.get_ref().chain_id()))]
+    #[instrument(
+        target = "grpc_server",
+        skip_all,
+        err,
+        fields(
+            nickname = self.state.nickname(),
+            chain_id = ?request.get_ref().chain_id()
+        )
+    )]
+    async fn handle_validated_certificate(
+        &self,
+        request: Request<api::HandleValidatedCertificateRequest>,
+    ) -> Result<Response<ChainInfoResult>, Status> {
+        let start = Instant::now();
+        let HandleValidatedCertificateRequest { certificate } = request.into_inner().try_into()?;
+        trace!(?certificate, "Handling certificate");
+        match self
+            .state
+            .clone()
+            .handle_validated_certificate(certificate)
+            .await
+        {
+            Ok((info, actions)) => {
+                Self::log_request_success_and_latency(start, "handle_validated_certificate");
+                self.handle_network_actions(actions);
+                Ok(Response::new(info.try_into()?))
+            }
+            Err(error) => {
+                #[cfg(with_metrics)]
+                {
+                    SERVER_REQUEST_ERROR
+                        .with_label_values(&["handle_validated_certificate"])
+                        .inc();
+                }
+                error!(nickname = self.state.nickname(), %error, "Failed to handle validated certificate");
+                Ok(Response::new(NodeError::from(error).try_into()?))
+            }
+        }
+    }
+
+    #[instrument(
+        target = "grpc_server",
+        skip_all,
+        err,
+        fields(
+            nickname = self.state.nickname(),
+            chain_id = ?request.get_ref().chain_id()
+        )
+    )]
+    async fn handle_timeout_certificate(
+        &self,
+        request: Request<api::HandleTimeoutCertificateRequest>,
+    ) -> Result<Response<ChainInfoResult>, Status> {
+        let start = Instant::now();
+        let HandleTimeoutCertificateRequest { certificate } = request.into_inner().try_into()?;
+        trace!(?certificate, "Handling Timeout certificate");
+        match self
+            .state
+            .clone()
+            .handle_timeout_certificate(certificate)
+            .await
+        {
+            Ok((info, _actions)) => {
+                Self::log_request_success_and_latency(start, "handle_timeout_certificate");
+                Ok(Response::new(info.try_into()?))
+            }
+            Err(error) => {
+                #[cfg(with_metrics)]
+                {
+                    SERVER_REQUEST_ERROR
+                        .with_label_values(&["handle_timeout_certificate"])
+                        .inc();
+                }
+                error!(nickname = self.state.nickname(), %error, "Failed to handle timeout certificate");
+                Ok(Response::new(NodeError::from(error).try_into()?))
+            }
+        }
+    }
+
+    #[instrument(
+        target = "grpc_server",
+        skip_all,
+        err,
+        fields(
+            nickname = self.state.nickname(),
+            chain_id = ?request.get_ref().chain_id()
+        )
+    )]
     async fn handle_chain_info_query(
         &self,
         request: Request<ChainInfoQuery>,
@@ -573,7 +685,90 @@ where
         }
     }
 
-    #[instrument(target = "grpc_server", skip_all, err, fields(nickname = self.state.nickname(), chain_id= ?request.get_ref().chain_id()))]
+    #[instrument(
+        target = "grpc_server",
+        skip_all,
+        err,
+        fields(
+            nickname = self.state.nickname(),
+            chain_id = ?request.get_ref().chain_id()
+        )
+    )]
+    async fn download_pending_blob(
+        &self,
+        request: Request<PendingBlobRequest>,
+    ) -> Result<Response<PendingBlobResult>, Status> {
+        let start = Instant::now();
+        let (chain_id, blob_id) = request.into_inner().try_into()?;
+        trace!(?chain_id, ?blob_id, "Download pending blob");
+        match self
+            .state
+            .clone()
+            .download_pending_blob(chain_id, blob_id)
+            .await
+        {
+            Ok(blob) => {
+                Self::log_request_success_and_latency(start, "download_pending_blob");
+                Ok(Response::new(blob.into_content().try_into()?))
+            }
+            Err(error) => {
+                #[cfg(with_metrics)]
+                {
+                    SERVER_REQUEST_ERROR
+                        .with_label_values(&["download_pending_blob"])
+                        .inc();
+                }
+                error!(nickname = self.state.nickname(), %error, "Failed to download pending blob");
+                Ok(Response::new(NodeError::from(error).try_into()?))
+            }
+        }
+    }
+
+    #[instrument(
+        target = "grpc_server",
+        skip_all,
+        err,
+        fields(
+            nickname = self.state.nickname(),
+            chain_id = ?request.get_ref().chain_id
+        )
+    )]
+    async fn handle_pending_blob(
+        &self,
+        request: Request<HandlePendingBlobRequest>,
+    ) -> Result<Response<ChainInfoResult>, Status> {
+        let start = Instant::now();
+        let (chain_id, blob_content) = request.into_inner().try_into()?;
+        let blob = Blob::new(blob_content);
+        let blob_id = blob.id();
+        trace!(?chain_id, ?blob_id, "Handle pending blob");
+        match self.state.clone().handle_pending_blob(chain_id, blob).await {
+            Ok(info) => {
+                Self::log_request_success_and_latency(start, "handle_pending_blob");
+                Ok(Response::new(info.try_into()?))
+            }
+            Err(error) => {
+                #[cfg(with_metrics)]
+                {
+                    SERVER_REQUEST_ERROR
+                        .with_label_values(&["handle_pending_blob"])
+                        .inc();
+                }
+                error!(nickname = self.state.nickname(), %error, "Failed to handle pending blob");
+                Ok(Response::new(NodeError::from(error).try_into()?))
+            }
+        }
+    }
+
+    #[instrument(
+        target = "grpc_server",
+        skip_all,
+        err,
+        fields(
+            nickname = self.state.nickname(),
+            chain_id = ?request.get_ref().chain_id()
+        )
+    )]
     async fn handle_cross_chain_request(
         &self,
         request: Request<CrossChainRequest>,
@@ -618,13 +813,37 @@ impl GrpcProxyable for LiteCertificate {
     }
 }
 
-impl GrpcProxyable for api::HandleCertificateRequest {
+impl GrpcProxyable for api::HandleConfirmedCertificateRequest {
+    fn chain_id(&self) -> Option<ChainId> {
+        self.chain_id.clone()?.try_into().ok()
+    }
+}
+
+impl GrpcProxyable for api::HandleTimeoutCertificateRequest {
+    fn chain_id(&self) -> Option<ChainId> {
+        self.chain_id.clone()?.try_into().ok()
+    }
+}
+
+impl GrpcProxyable for api::HandleValidatedCertificateRequest {
     fn chain_id(&self) -> Option<ChainId> {
         self.chain_id.clone()?.try_into().ok()
     }
 }
 
 impl GrpcProxyable for ChainInfoQuery {
+    fn chain_id(&self) -> Option<ChainId> {
+        self.chain_id.clone()?.try_into().ok()
+    }
+}
+
+impl GrpcProxyable for PendingBlobRequest {
+    fn chain_id(&self) -> Option<ChainId> {
+        self.chain_id.clone()?.try_into().ok()
+    }
+}
+
+impl GrpcProxyable for HandlePendingBlobRequest {
     fn chain_id(&self) -> Option<ChainId> {
         self.chain_id.clone()?.try_into().ok()
     }

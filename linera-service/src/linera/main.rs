@@ -16,9 +16,9 @@ use chrono::Utc;
 use colored::Colorize;
 use futures::{lock::Mutex, FutureExt as _, StreamExt};
 use linera_base::{
-    crypto::{CryptoHash, CryptoRng, PublicKey},
+    crypto::{CryptoHash, CryptoRng},
     data_types::{ApplicationPermissions, Timestamp},
-    identifiers::{ChainDescription, ChainId, MessageId, Owner},
+    identifiers::{AccountOwner, ChainDescription, ChainId, MessageId, Owner},
     ownership::ChainOwnership,
 };
 use linera_client::{
@@ -39,7 +39,7 @@ use linera_core::{
     node::{CrossChainMessageDelivery, ValidatorNodeProvider},
     remote_node::RemoteNode,
     worker::Reason,
-    JoinSetExt as _,
+    JoinSetExt as _, DEFAULT_GRACE_PERIOD,
 };
 use linera_execution::{
     committee::{Committee, ValidatorName, ValidatorState},
@@ -62,9 +62,10 @@ mod net_up_utils;
 
 #[cfg(feature = "benchmark")]
 use {
-    linera_chain::types::{CertificateValue, ConfirmedBlock, HashedCertificateValue},
+    linera_base::hashed::Hashed,
+    linera_chain::types::ConfirmedBlock,
     linera_core::data_types::ChainInfoResponse,
-    linera_rpc::{HandleCertificateRequest, RpcMessage},
+    linera_rpc::{HandleConfirmedCertificateRequest, RpcMessage},
     std::collections::HashSet,
 };
 
@@ -121,6 +122,13 @@ impl Runnable for Job {
                 amount,
             } => {
                 let chain_client = context.make_chain_client(sender.chain_id)?;
+                let owner = match sender.owner {
+                    Some(AccountOwner::User(owner)) => Some(owner),
+                    Some(AccountOwner::Application(_)) => {
+                        bail!("Can't transfer from an application account")
+                    }
+                    None => None,
+                };
                 info!(
                     "Starting transfer of {} native tokens from {} to {}",
                     amount, sender, recipient
@@ -131,7 +139,7 @@ impl Runnable for Job {
                         let chain_client = chain_client.clone();
                         async move {
                             chain_client
-                                .transfer_to_account(sender.owner, amount, recipient)
+                                .transfer_to_account(owner, amount, recipient)
                                 .await
                         }
                     })
@@ -144,23 +152,23 @@ impl Runnable for Job {
 
             OpenChain {
                 chain_id,
-                public_key,
+                owner,
                 balance,
             } => {
                 let chain_id = chain_id.unwrap_or_else(|| context.default_chain());
                 let chain_client = context.make_chain_client(chain_id)?;
-                let (new_public_key, key_pair) = match public_key {
-                    Some(key) => (key, None),
+                let (new_owner, key_pair) = match owner {
+                    Some(owner) => (owner, None),
                     None => {
                         let key_pair = context.wallet.generate_key_pair();
-                        (key_pair.public(), Some(key_pair))
+                        (key_pair.public().into(), Some(key_pair))
                     }
                 };
                 info!("Opening a new chain from existing chain {}", chain_id);
                 let time_start = Instant::now();
                 let (message_id, certificate) = context
                     .apply_client_command(&chain_client, |chain_client| {
-                        let ownership = ChainOwnership::single(new_public_key);
+                        let ownership = ChainOwnership::single(new_owner);
                         let chain_client = chain_client.clone();
                         async move {
                             chain_client
@@ -171,7 +179,7 @@ impl Runnable for Job {
                     .await
                     .context("Failed to open chain")?;
                 let id = ChainId::child(message_id);
-                let timestamp = certificate.executed_block().block.timestamp;
+                let timestamp = certificate.block().header.timestamp;
                 context
                     .update_wallet_for_new_chain(id, key_pair, timestamp)
                     .await?;
@@ -218,7 +226,7 @@ impl Runnable for Job {
                 // No key pair. This chain can be assigned explicitly using the assign command.
                 let key_pair = None;
                 let id = ChainId::child(message_id);
-                let timestamp = certificate.executed_block().block.timestamp;
+                let timestamp = certificate.block().header.timestamp;
                 context
                     .update_wallet_for_new_chain(id, key_pair, timestamp)
                     .await?;
@@ -272,13 +280,20 @@ impl Runnable for Job {
                 let chain_client = context.make_chain_client(chain_id)?;
                 info!("Closing chain {}", chain_id);
                 let time_start = Instant::now();
-                let certificate = context
+                let result = context
                     .apply_client_command(&chain_client, |chain_client| {
                         let chain_client = chain_client.clone();
                         async move { chain_client.close_chain().await }
                     })
-                    .await
-                    .context("Failed to close chain")?;
+                    .await;
+                let certificate = match result {
+                    Ok(Some(certificate)) => certificate,
+                    Ok(None) => {
+                        tracing::info!("Chain is already closed; nothing to do.");
+                        return Ok(());
+                    }
+                    Err(error) => Err(error).context("Failed to close chain")?,
+                };
                 let time_total = time_start.elapsed();
                 info!(
                     "Closing chain confirmed after {} ms",
@@ -449,6 +464,8 @@ impl Runnable for Job {
                     committee.validators()
                 );
                 let node_provider = context.make_node_provider();
+                let mut num_ok_validators = 0;
+                let mut faulty_validators = vec![];
                 for (name, state) in committee.validators() {
                     let address = &state.network_address;
                     let node = node_provider.make_node(address)?;
@@ -461,6 +478,11 @@ impl Runnable for Job {
                         }
                         Err(e) => {
                             error!("Failed to get version information for validator {name:?} at {address}:\n{e}");
+                            faulty_validators.push((
+                                name,
+                                address,
+                                "Failed to get version information.".to_string(),
+                            ));
                             continue;
                         }
                     }
@@ -474,16 +496,27 @@ impl Runnable for Job {
                             );
                             if response.check(name).is_ok() {
                                 info!("Signature for public key {name} is OK.");
+                                num_ok_validators += 1;
                             } else {
                                 error!("Signature for public key {name} is NOT OK.");
+                                faulty_validators.push((name, address, format!("{:?}", response)));
                             }
                         }
                         Err(e) => {
                             error!("Failed to get chain info for validator {name:?} at {address} and chain {chain_id}:\n{e}");
+                            faulty_validators.push((
+                                name,
+                                address,
+                                "Failed to get chain info.".to_string(),
+                            ));
                             continue;
                         }
                     }
                 }
+                if !faulty_validators.is_empty() {
+                    println!("{:#?}", faulty_validators);
+                }
+                println!("{}/{} OK.", num_ok_validators, committee.validators().len());
             }
 
             command @ (SetValidator { .. }
@@ -536,7 +569,7 @@ impl Runnable for Job {
                     .await
                     .unwrap()
                     .into_iter()
-                    .map(|c| c.executed_block().messages().len())
+                    .map(|c| c.block().messages().len())
                     .sum::<usize>();
                 info!("Subscribed {} chains to new committees", n);
                 let maybe_certificate = context
@@ -744,9 +777,7 @@ impl Runnable for Job {
                         let executed_block = context
                             .stage_block_execution(proposal.content.block.clone())
                             .await?;
-                        let value = HashedCertificateValue::from(CertificateValue::ConfirmedBlock(
-                            ConfirmedBlock::new(executed_block),
-                        ));
+                        let value = Hashed::new(ConfirmedBlock::new(executed_block));
                         values.insert(value.hash(), value);
                     }
                 }
@@ -775,12 +806,12 @@ impl Runnable for Job {
                 let messages = certificates
                     .iter()
                     .map(|certificate| {
-                        HandleCertificateRequest {
-                            certificate: certificate.clone(),
-                            blobs: vec![],
-                            wait_for_outgoing_messages: true,
-                        }
-                        .into()
+                        RpcMessage::ConfirmedCertificate(Box::new(
+                            HandleConfirmedCertificateRequest {
+                                certificate: certificate.clone(),
+                                wait_for_outgoing_messages: true,
+                            },
+                        ))
                     })
                     .collect();
                 let responses = context
@@ -1030,19 +1061,18 @@ impl Runnable for Job {
                 debug!("{:?}", certificate);
             }
 
-            Assign { key, message_id } => {
+            Assign { owner, message_id } => {
                 let start_time = Instant::now();
                 let chain_id = ChainId::child(message_id);
                 info!(
-                    "Linking chain {} to its corresponding key in the wallet, owned by {}",
-                    chain_id,
-                    Owner::from(&key)
+                    "Linking chain {chain_id} to its corresponding key in the wallet, owned by \
+                    {owner}",
                 );
                 Self::assign_new_chain_to_key(
                     chain_id,
                     message_id,
                     storage,
-                    key,
+                    owner,
                     None,
                     &mut context,
                 )
@@ -1050,7 +1080,7 @@ impl Runnable for Job {
                 println!("{}", chain_id);
                 context.save_wallet().await?;
                 info!(
-                    "Chain linked to key in {} ms",
+                    "Chain linked to owner in {} ms",
                     start_time.elapsed().as_millis()
                 );
             }
@@ -1141,18 +1171,17 @@ impl Runnable for Job {
             }) => {
                 let start_time = Instant::now();
                 let key_pair = context.wallet.generate_key_pair();
-                let public_key = key_pair.public();
+                let owner = key_pair.public().into();
                 info!(
-                    "Requesting a new chain for owner {} using the faucet at address {}",
-                    Owner::from(&public_key),
-                    faucet_url,
+                    "Requesting a new chain for owner {owner} using the faucet at address \
+                    {faucet_url}",
                 );
                 context
                     .wallet_mut()
                     .mutate(|w| w.add_unassigned_key_pair(key_pair))
                     .await?;
                 let faucet = cli_wrappers::Faucet::new(faucet_url);
-                let outcome = faucet.claim(&public_key).await?;
+                let outcome = faucet.claim(&owner).await?;
                 let validators = faucet.current_validators().await?;
                 println!("{}", outcome.chain_id);
                 println!("{}", outcome.message_id);
@@ -1161,7 +1190,7 @@ impl Runnable for Job {
                     outcome.chain_id,
                     outcome.message_id,
                     storage.clone(),
-                    public_key,
+                    owner,
                     Some(validators),
                     &mut context,
                 )
@@ -1186,6 +1215,7 @@ impl Runnable for Job {
             | Net(_)
             | Storage { .. }
             | Wallet(_)
+            | ExtractScriptFromMarkdown { .. }
             | HelpMarkdown => {
                 unreachable!()
             }
@@ -1199,7 +1229,7 @@ impl Job {
         chain_id: ChainId,
         message_id: MessageId,
         storage: S,
-        public_key: PublicKey,
+        owner: Owner,
         validators: Option<Vec<(ValidatorName, String)>>,
         context: &mut ClientContext<S, impl Persist<Target = Wallet>>,
     ) -> anyhow::Result<()>
@@ -1216,6 +1246,7 @@ impl Job {
             vec![message_id.chain_id, chain_id],
             "Temporary client for fetching the parent chain",
             NonZeroUsize::new(20).expect("Chain worker limit should not be zero"),
+            DEFAULT_GRACE_PERIOD,
         );
 
         // Take the latest committee we know of.
@@ -1250,7 +1281,7 @@ impl Job {
             .certificate_for(&message_id)
             .await
             .context("could not find OpenChain message")?;
-        let executed_block = certificate.executed_block();
+        let executed_block = certificate.block();
         let Some(Message::System(SystemMessage::OpenChain(config))) = executed_block
             .message_by_id(&message_id)
             .map(|msg| &msg.message)
@@ -1261,14 +1292,14 @@ impl Job {
             );
         };
         anyhow::ensure!(
-            config.ownership.verify_owner(&Owner::from(public_key)) == Some(public_key),
+            config.ownership.verify_owner(&owner),
             "The chain with the ID returned by the faucet is not owned by you. \
             Please make sure you are connecting to a genuine faucet."
         );
         context
             .wallet_mut()
             .mutate(|w| {
-                w.assign_new_chain_to_key(public_key, chain_id, executed_block.block.timestamp)
+                w.assign_new_chain_to_owner(owner, chain_id, executed_block.header.timestamp)
             })
             .await?
             .context("could not assign the new chain")?;
@@ -1312,7 +1343,7 @@ impl Job {
             };
             let certificate = storage.read_certificate(hash).await?;
             let committee = committees
-                .get(&certificate.executed_block().block.epoch)
+                .get(&certificate.block().header.epoch)
                 .ok_or_else(|| anyhow!("tip of chain {chain_id} is outdated."))?;
             certificate.check(committee)?;
         }
@@ -1376,8 +1407,7 @@ fn main() -> anyhow::Result<()> {
 /// Returns the log file name to use based on the [`ClientCommand`] that will run.
 fn log_file_name_for(command: &ClientCommand) -> Cow<'static, str> {
     match command {
-        ClientCommand::HelpMarkdown
-        | ClientCommand::Transfer { .. }
+        ClientCommand::Transfer { .. }
         | ClientCommand::OpenChain { .. }
         | ClientCommand::OpenMultiOwnerChain { .. }
         | ClientCommand::ChangeOwnership { .. }
@@ -1413,6 +1443,9 @@ fn log_file_name_for(command: &ClientCommand) -> Cow<'static, str> {
         ClientCommand::Storage { .. } => "storage".into(),
         ClientCommand::Service { port, .. } => format!("service-{port}").into(),
         ClientCommand::Faucet { .. } => "faucet".into(),
+        ClientCommand::HelpMarkdown | ClientCommand::ExtractScriptFromMarkdown { .. } => {
+            "tool".into()
+        }
     }
 }
 
@@ -1420,6 +1453,24 @@ async fn run(options: &ClientOptions) -> Result<i32, anyhow::Error> {
     match &options.command {
         ClientCommand::HelpMarkdown => {
             clap_markdown::print_help_markdown::<ClientOptions>();
+            Ok(0)
+        }
+
+        ClientCommand::ExtractScriptFromMarkdown {
+            path,
+            pause_after_linera_service,
+            pause_after_gql_mutations,
+        } => {
+            let file = crate::util::Markdown::new(path)?;
+            let pause_after_linera_service =
+                Some(*pause_after_linera_service).filter(|p| !p.is_zero());
+            let pause_after_gql_mutations =
+                Some(*pause_after_gql_mutations).filter(|p| !p.is_zero());
+            file.extract_bash_script_to(
+                std::io::stdout(),
+                pause_after_linera_service,
+                pause_after_gql_mutations,
+            )?;
             Ok(0)
         }
 
@@ -1559,11 +1610,11 @@ async fn run(options: &ClientOptions) -> Result<i32, anyhow::Error> {
             let start_time = Instant::now();
             let mut wallet = options.wallet().await?;
             let key_pair = wallet.generate_key_pair();
-            let public = key_pair.public();
+            let owner = Owner::from(key_pair.public());
             wallet
                 .mutate(|w| w.add_unassigned_key_pair(key_pair))
                 .await?;
-            println!("{}", public);
+            println!("{}", owner);
             info!("Key generated in {} ms", start_time.elapsed().as_millis());
             Ok(0)
         }
@@ -1580,9 +1631,14 @@ async fn run(options: &ClientOptions) -> Result<i32, anyhow::Error> {
                 policy_config,
                 kubernetes: true,
                 binaries,
+                no_build,
+                docker_image_name,
                 path: _,
                 storage: _,
                 external_protocol: _,
+                with_faucet_chain,
+                faucet_port,
+                faucet_amount,
             } => {
                 net_up_utils::handle_net_up_kubernetes(
                     *extra_wallets,
@@ -1592,7 +1648,12 @@ async fn run(options: &ClientOptions) -> Result<i32, anyhow::Error> {
                     *shards,
                     *testing_prng_seed,
                     binaries,
+                    *no_build,
+                    docker_image_name.clone(),
                     policy_config.into_policy(),
+                    *with_faucet_chain,
+                    *faucet_port,
+                    *faucet_amount,
                 )
                 .boxed()
                 .await?;
@@ -1610,6 +1671,9 @@ async fn run(options: &ClientOptions) -> Result<i32, anyhow::Error> {
                 path,
                 storage,
                 external_protocol,
+                with_faucet_chain,
+                faucet_port,
+                faucet_amount,
                 ..
             } => {
                 net_up_utils::handle_net_up_service(
@@ -1623,6 +1687,9 @@ async fn run(options: &ClientOptions) -> Result<i32, anyhow::Error> {
                     path,
                     storage,
                     external_protocol.clone(),
+                    *with_faucet_chain,
+                    *faucet_port,
+                    *faucet_amount,
                 )
                 .boxed()
                 .await?;
@@ -1708,14 +1775,26 @@ async fn run(options: &ClientOptions) -> Result<i32, anyhow::Error> {
         }
 
         ClientCommand::Wallet(wallet_command) => match wallet_command {
-            WalletCommand::Show { chain_id, short } => {
+            WalletCommand::Show {
+                chain_id,
+                short,
+                owned,
+            } => {
                 let start_time = Instant::now();
+                let chain_ids = if let Some(chain_id) = chain_id {
+                    ensure!(!owned, "Cannot specify both --owned and a chain ID");
+                    vec![*chain_id]
+                } else if *owned {
+                    options.wallet().await?.owned_chain_ids()
+                } else {
+                    options.wallet().await?.chain_ids()
+                };
                 if *short {
-                    for chain_id in options.wallet().await?.chains.keys() {
+                    for chain_id in chain_ids {
                         println!("{chain_id}");
                     }
                 } else {
-                    wallet::pretty_print(&*options.wallet().await?, *chain_id);
+                    wallet::pretty_print(&*options.wallet().await?, chain_ids);
                 }
                 info!("Wallet shown in {} ms", start_time.elapsed().as_millis());
                 Ok(0)

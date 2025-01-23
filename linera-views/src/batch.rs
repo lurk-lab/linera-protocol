@@ -121,6 +121,9 @@ impl UnorderedBatch {
         &mut self,
         db: &DB,
     ) -> Result<(), DB::Error> {
+        if self.key_prefix_deletions.is_empty() {
+            return Ok(());
+        }
         let inserted_keys = self
             .simple_unordered_batch
             .insertions
@@ -147,6 +150,16 @@ impl UnorderedBatch {
         }
         self.key_prefix_deletions = key_prefix_deletions;
         Ok(())
+    }
+
+    /// The total number of entries of the batch.
+    pub fn len(&self) -> usize {
+        self.key_prefix_deletions.len() + self.simple_unordered_batch.len()
+    }
+
+    /// Tests whether the batch is empty or not
+    pub fn is_empty(&self) -> bool {
+        self.key_prefix_deletions.is_empty() && self.simple_unordered_batch.is_empty()
     }
 }
 
@@ -185,6 +198,11 @@ impl Batch {
                 WriteOperation::DeletePrefix { key_prefix } => key_prefix.len(),
             })
             .sum()
+    }
+
+    /// Whether the batch is empty or not
+    pub fn is_empty(&self) -> bool {
+        self.operations.is_empty()
     }
 
     /// Returns the number of operations in this [`Batch`].

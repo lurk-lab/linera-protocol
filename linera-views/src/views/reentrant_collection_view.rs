@@ -6,7 +6,6 @@ use std::sync::LazyLock;
 use std::{
     borrow::Borrow,
     collections::{btree_map, BTreeMap},
-    fmt::Debug,
     io::Write,
     marker::PhantomData,
     mem,
@@ -842,6 +841,31 @@ where
         Ok(keys)
     }
 
+    /// Returns the number of indices of the collection.
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::{create_test_memory_context, MemoryContext};
+    /// # use linera_views::reentrant_collection_view::ReentrantByteCollectionView;
+    /// # use linera_views::register_view::RegisterView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut view: ReentrantByteCollectionView<_, RegisterView<_, String>> =
+    ///     ReentrantByteCollectionView::load(context).await.unwrap();
+    /// view.try_load_entry_mut(&[0, 1]).await.unwrap();
+    /// view.try_load_entry_mut(&[0, 2]).await.unwrap();
+    /// assert_eq!(view.count().await.unwrap(), 2);
+    /// # })
+    /// ```
+    pub async fn count(&self) -> Result<usize, ViewError> {
+        let mut count = 0;
+        self.for_each_key(|_key| {
+            count += 1;
+            Ok(())
+        })
+        .await?;
+        Ok(count)
+    }
+
     /// Applies a function f on each index (aka key). Keys are visited in a
     /// lexicographic order. If the function returns false then the loop
     /// ends prematurely.
@@ -959,7 +983,8 @@ where
         let _hash_latency = REENTRANT_COLLECTION_VIEW_HASH_RUNTIME.measure_latency();
         let mut hasher = sha3::Sha3_256::default();
         let keys = self.keys().await?;
-        hasher.update_with_bcs_bytes(&keys.len())?;
+        let count = keys.len() as u32;
+        hasher.update_with_bcs_bytes(&count)?;
         let cached_entries = self.cached_entries.get_mut().unwrap();
         for key in keys {
             hasher.update_with_bytes(&key)?;
@@ -992,7 +1017,8 @@ where
         let _hash_latency = REENTRANT_COLLECTION_VIEW_HASH_RUNTIME.measure_latency();
         let mut hasher = sha3::Sha3_256::default();
         let keys = self.keys().await?;
-        hasher.update_with_bcs_bytes(&keys.len())?;
+        let count = keys.len() as u32;
+        hasher.update_with_bcs_bytes(&count)?;
         let mut cached_entries_result = Vec::new();
         {
             let cached_entries = self.cached_entries.lock().unwrap();
@@ -1040,7 +1066,7 @@ impl<C, I, W> View<C> for ReentrantCollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Debug + Serialize + DeserializeOwned,
+    I: Send + Sync + Serialize + DeserializeOwned,
     W: View<C> + Send + Sync,
 {
     const NUM_INIT_KEYS: usize = ReentrantByteCollectionView::<C, W>::NUM_INIT_KEYS;
@@ -1086,7 +1112,7 @@ impl<C, I, W> ClonableView<C> for ReentrantCollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Debug + Serialize + DeserializeOwned,
+    I: Send + Sync + Serialize + DeserializeOwned,
     W: ClonableView<C> + Send + Sync,
 {
     fn clone_unchecked(&mut self) -> Result<Self, ViewError> {
@@ -1101,7 +1127,7 @@ impl<C, I, W> ReentrantCollectionView<C, I, W>
 where
     C: Context + Send,
     ViewError: From<C::Error>,
-    I: Sync + Clone + Send + Debug + Serialize + DeserializeOwned,
+    I: Sync + Clone + Send + Serialize + DeserializeOwned,
     W: View<C> + Send + Sync,
 {
     /// Loads a subview for the data at the given index in the collection. If an entry
@@ -1256,7 +1282,7 @@ impl<C, I, W> ReentrantCollectionView<C, I, W>
 where
     C: Context + Send + Clone + 'static,
     ViewError: From<C::Error>,
-    I: Sync + Clone + Send + Debug + Serialize + DeserializeOwned,
+    I: Sync + Clone + Send + Serialize + DeserializeOwned,
     W: View<C> + Send + Sync + 'static,
 {
     /// Load multiple entries for writing at once.
@@ -1404,7 +1430,7 @@ impl<C, I, W> ReentrantCollectionView<C, I, W>
 where
     C: Context + Send,
     ViewError: From<C::Error>,
-    I: Sync + Clone + Send + Debug + Serialize + DeserializeOwned,
+    I: Sync + Clone + Send + Serialize + DeserializeOwned,
     W: View<C> + Send + Sync,
 {
     /// Returns the list of indices in the collection in an order determined
@@ -1426,12 +1452,31 @@ where
     /// ```
     pub async fn indices(&self) -> Result<Vec<I>, ViewError> {
         let mut indices = Vec::new();
-        self.for_each_index(|index: I| {
+        self.for_each_index(|index| {
             indices.push(index);
             Ok(())
         })
         .await?;
         Ok(indices)
+    }
+
+    /// Returns the number of indices in the collection.
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::{create_test_memory_context, MemoryContext};
+    /// # use linera_views::reentrant_collection_view::ReentrantCollectionView;
+    /// # use linera_views::register_view::RegisterView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut view: ReentrantCollectionView<_, u64, RegisterView<_, String>> =
+    ///     ReentrantCollectionView::load(context).await.unwrap();
+    /// view.try_load_entry_mut(&23).await.unwrap();
+    /// view.try_load_entry_mut(&25).await.unwrap();
+    /// assert_eq!(view.count().await.unwrap(), 2);
+    /// # })
+    /// ```
+    pub async fn count(&self) -> Result<usize, ViewError> {
+        self.collection.count().await
     }
 
     /// Applies a function f on each index. Indices are visited in an order
@@ -1513,7 +1558,7 @@ impl<C, I, W> HashableView<C> for ReentrantCollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Debug + Send + Sync + Serialize + DeserializeOwned,
+    I: Send + Sync + Serialize + DeserializeOwned,
     W: HashableView<C> + Send + Sync + 'static,
 {
     type Hasher = sha3::Sha3_256;
@@ -1540,7 +1585,7 @@ impl<C, I, W> View<C> for ReentrantCustomCollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Debug + CustomSerialize,
+    I: Send + Sync + CustomSerialize,
     W: View<C> + Send + Sync,
 {
     const NUM_INIT_KEYS: usize = ReentrantByteCollectionView::<C, W>::NUM_INIT_KEYS;
@@ -1586,7 +1631,7 @@ impl<C, I, W> ClonableView<C> for ReentrantCustomCollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Debug + CustomSerialize,
+    I: Send + Sync + CustomSerialize,
     W: ClonableView<C> + Send + Sync,
 {
     fn clone_unchecked(&mut self) -> Result<Self, ViewError> {
@@ -1601,7 +1646,7 @@ impl<C, I, W> ReentrantCustomCollectionView<C, I, W>
 where
     C: Context + Send,
     ViewError: From<C::Error>,
-    I: Sync + Clone + Send + Debug + CustomSerialize,
+    I: Sync + Clone + Send + CustomSerialize,
     W: View<C> + Send + Sync,
 {
     /// Loads a subview for the data at the given index in the collection. If an entry
@@ -1757,7 +1802,7 @@ impl<C, I, W> ReentrantCustomCollectionView<C, I, W>
 where
     C: Context + Send + Clone + 'static,
     ViewError: From<C::Error>,
-    I: Sync + Clone + Send + Debug + CustomSerialize,
+    I: Sync + Clone + Send + CustomSerialize,
     W: View<C> + Send + Sync + 'static,
 {
     /// Load multiple entries for writing at once.
@@ -1903,7 +1948,7 @@ impl<C, I, W> ReentrantCustomCollectionView<C, I, W>
 where
     C: Context + Send,
     ViewError: From<C::Error>,
-    I: Sync + Clone + Send + Debug + CustomSerialize,
+    I: Sync + Clone + Send + CustomSerialize,
     W: View<C> + Send + Sync,
 {
     /// Returns the list of indices in the collection. The order is determined by
@@ -1925,12 +1970,31 @@ where
     /// ```
     pub async fn indices(&self) -> Result<Vec<I>, ViewError> {
         let mut indices = Vec::new();
-        self.for_each_index(|index: I| {
+        self.for_each_index(|index| {
             indices.push(index);
             Ok(())
         })
         .await?;
         Ok(indices)
+    }
+
+    /// Returns the number of entries in the collection.
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::{create_test_memory_context, MemoryContext};
+    /// # use linera_views::reentrant_collection_view::ReentrantCustomCollectionView;
+    /// # use linera_views::register_view::RegisterView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut view: ReentrantCustomCollectionView<_, u128, RegisterView<_, String>> =
+    ///     ReentrantCustomCollectionView::load(context).await.unwrap();
+    /// view.try_load_entry_mut(&23).await.unwrap();
+    /// view.try_load_entry_mut(&25).await.unwrap();
+    /// assert_eq!(view.count().await.unwrap(), 2);
+    /// # })
+    /// ```
+    pub async fn count(&self) -> Result<usize, ViewError> {
+        self.collection.count().await
     }
 
     /// Applies a function f on each index. Indices are visited in an order
@@ -2014,7 +2078,7 @@ impl<C, I, W> HashableView<C> for ReentrantCustomCollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Debug + Send + Sync + CustomSerialize,
+    I: Send + Sync + CustomSerialize,
     W: HashableView<C> + Send + Sync + 'static,
 {
     type Hasher = sha3::Sha3_256;

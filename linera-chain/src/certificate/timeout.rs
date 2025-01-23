@@ -2,44 +2,30 @@
 // Copyright (c) Zefchain Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use linera_base::{crypto::Signature, data_types::Round};
+use linera_base::{crypto::Signature, data_types::Round, hashed::Hashed};
 use linera_execution::committee::ValidatorName;
 use serde::{
     ser::{Serialize, SerializeStruct, Serializer},
     Deserialize, Deserializer,
 };
 
-use super::{
-    generic::GenericCertificate, hashed::Hashed, Certificate, CertificateValue,
-    HashedCertificateValue,
-};
-use crate::block::Timeout;
+use super::{generic::GenericCertificate, Certificate};
+use crate::block::{ConversionError, Timeout};
 
-impl From<Certificate> for GenericCertificate<Timeout> {
-    fn from(cert: Certificate) -> Self {
-        let hash = cert.hash();
-        let (value, round, signatures) = cert.destructure();
-        match value.into_inner() {
-            CertificateValue::Timeout(timeout) => {
-                Self::new(Hashed::unchecked_new(timeout, hash), round, signatures)
-            }
-            _ => panic!("Expected a timeout certificate"),
+impl TryFrom<Certificate> for GenericCertificate<Timeout> {
+    type Error = ConversionError;
+
+    fn try_from(cert: Certificate) -> Result<Self, Self::Error> {
+        match cert {
+            Certificate::Timeout(timeout) => Ok(timeout),
+            _ => Err(ConversionError::Timeout),
         }
     }
 }
 
 impl From<GenericCertificate<Timeout>> for Certificate {
     fn from(cert: GenericCertificate<Timeout>) -> Certificate {
-        let (value, round, signatures) = cert.destructure();
-        Certificate::new(
-            HashedCertificateValue::new_timeout(
-                value.inner().chain_id,
-                value.inner().height,
-                value.inner().epoch,
-            ),
-            round,
-            signatures,
-        )
+        Certificate::Timeout(cert)
     }
 }
 
@@ -61,16 +47,15 @@ impl<'de> Deserialize<'de> for GenericCertificate<Timeout> {
         #[derive(Deserialize)]
         #[serde(rename = "TimeoutCertificate")]
         struct Inner {
-            value: Timeout,
+            value: Hashed<Timeout>,
             round: Round,
             signatures: Vec<(ValidatorName, Signature)>,
         }
         let inner = Inner::deserialize(deserializer)?;
-        let timeout_hashed: HashedCertificateValue = inner.value.clone().into();
-        Ok(Self::new(
-            Hashed::unchecked_new(inner.value, timeout_hashed.hash()),
-            inner.round,
-            inner.signatures,
-        ))
+        if !crate::data_types::is_strictly_ordered(&inner.signatures) {
+            Err(serde::de::Error::custom("Vector is not strictly sorted"))
+        } else {
+            Ok(Self::new(inner.value, inner.round, inner.signatures))
+        }
     }
 }

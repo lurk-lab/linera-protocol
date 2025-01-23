@@ -1,5 +1,3 @@
-<!-- cargo-rdme start -->
-
 # Generative NFT Example Application
 
 This example application implements generative non-fungible tokens (NFTs). It is based on the
@@ -24,9 +22,9 @@ the Linera blockchain ecosystem.
 For more details on the application's contract and how it manages multiple different NFTs, see the
 [NFT example](../non-fungible/README.md#how-it-works).
 
-# Usage
+## Usage
 
-## Setting Up
+### Setting Up
 
 Most of this can be referred to the [fungible app README](https://github.com/linera-io/linera-protocol/blob/main/examples/fungible/README.md#setting-up), except for at the end when compiling and publishing the bytecode, what you'll need to do will be slightly different.
 
@@ -40,7 +38,7 @@ linera_spawn_and_read_wallet_variables linera net up --testing-prng-seed 37
 Compile the `non-fungible` application WebAssembly binaries, and publish them as an application bytecode:
 
 ```bash
-(cd examples/gen-nft && cargo build --release)
+(cd examples/gen-nft && cargo build --release --target wasm32-unknown-unknown)
 
 BYTECODE_ID=$(linera publish-bytecode \
     examples/target/wasm32-unknown-unknown/release/gen_nft_{contract,service}.wasm)
@@ -48,7 +46,7 @@ BYTECODE_ID=$(linera publish-bytecode \
 
 Here, we stored the new bytecode ID in a variable `BYTECODE_ID` to be reused later.
 
-## Creating an NFT
+### Creating an NFT
 
 Unlike fungible tokens, each NFT is unique and identified by a unique token ID. Also unlike fungible tokens, when creating the NFT application you don't need to specify an initial state or parameters. NFTs will be minted later.
 
@@ -71,7 +69,7 @@ APP_ID=$(linera create-application $BYTECODE_ID)
 
 This will store the application ID in a new variable `APP_ID`.
 
-## Using the NFT Application
+### Using the NFT Application
 
 Operations such as minting NFTs, transferring NFTs, and claiming NFTs from other chains follow a similar approach to fungible tokens, with adjustments for the unique nature of NFTs.
 
@@ -82,7 +80,7 @@ PORT=8080
 linera service --port $PORT &
 ```
 
-### Using GraphiQL
+#### Using GraphiQL
 
 Type each of these in the GraphiQL interface and substitute the env variables with their actual values that we've defined above.
 
@@ -90,20 +88,20 @@ Type each of these in the GraphiQL interface and substitute the env variables wi
 - To mint an NFT, run the query:
 
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID
-    mutation {
-        mint(
-            minter: "User:$OWNER_1",
-            prompt: "Hello!"
-        )
-    }
+mutation {
+  mint(
+    minter: "User:$OWNER_1",
+    prompt: "Hello!"
+  )
+}
 ```
 
 - To check that it's assigned to the owner, run the query:
 
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID
-    query {
-        ownedNfts(owner: "User:$OWNER_1")
-    }
+query {
+  ownedNfts(owner: "User:$OWNER_1")
+}
 ```
 
 Set the `QUERY_RESULT` variable to have the result returned by the previous query, and `TOKEN_ID` will be properly set for you.
@@ -116,40 +114,40 @@ TOKEN_ID=$(echo "$QUERY_RESULT" | jq -r '.ownedNfts[].tokenId')
 - To check that it's there, run the query:
 
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID
-    query {
-        nft(tokenId: "$TOKEN_ID") {
-            tokenId,
-            owner,
-            prompt,
-            minter,
-        }
-    }
+query {
+  nft(tokenId: "$TOKEN_ID") {
+    tokenId,
+    owner,
+    prompt,
+    minter,
+  }
+}
 ```
 
 - To check everything that it's there, run the query:
 
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID
-    query {
-        nfts
-    }
+query {
+  nfts
+}
 ```
 
 - To transfer the NFT to user `$OWNER_2`, still on chain `$CHAIN_1`, run the query:
 
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID
-    mutation {
-        transfer(
-            sourceOwner: "User:$OWNER_1",
-            tokenId: "$TOKEN_ID",
-            targetAccount: {
-                chainId: "$CHAIN_1",
-                owner: "User:$OWNER_2"
-            }
-        )
+mutation {
+  transfer(
+    sourceOwner: "User:$OWNER_1",
+    tokenId: "$TOKEN_ID",
+    targetAccount: {
+      chainId: "$CHAIN_1",
+      owner: "User:$OWNER_2"
     }
+  )
+}
 ```
 
-### Using Web Frontend
+#### Using Web Frontend
 
 Installing and starting the web server:
 
@@ -167,5 +165,3 @@ echo "http://localhost:3000/$CHAIN_1?app=$APP_ID&owner=$OWNER_2&port=$PORT"
 ```
 
 For the final part, refer to [Fungible Token Example Application - Using web frontend](https://github.com/linera-io/linera-protocol/blob/main/examples/fungible/README.md#using-web-frontend).
-
-<!-- cargo-rdme end -->

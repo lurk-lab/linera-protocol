@@ -8,8 +8,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use async_graphql::{EmptyMutation, EmptySubscription, Schema, SimpleObject};
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::{extract::Extension, routing::get, Router};
-use linera_base::{crypto::CryptoHash, data_types::BlockHeight, identifiers::ChainId};
-use linera_chain::types::HashedCertificateValue;
+use linera_base::{
+    crypto::CryptoHash, data_types::BlockHeight, hashed::Hashed, identifiers::ChainId,
+};
+use linera_chain::types::ConfirmedBlock;
 use linera_views::{
     context::{Context, ViewContext},
     map_view::MapView,
@@ -82,7 +84,7 @@ where
     pub async fn process_value(
         &self,
         state: &mut StateView<ViewContext<(), S>>,
-        value: &HashedCertificateValue,
+        value: &Hashed<ConfirmedBlock>,
     ) -> Result<(), IndexerError> {
         for plugin in self.plugins.values() {
             plugin.register(value).await?
@@ -102,7 +104,7 @@ where
     pub async fn process(
         &self,
         listener: &Listener,
-        value: &HashedCertificateValue,
+        value: &Hashed<ConfirmedBlock>,
     ) -> Result<(), IndexerError> {
         let chain_id = value.inner().chain_id();
         let hash = value.hash();
@@ -125,20 +127,15 @@ where
         let mut values = Vec::new();
         let mut value = value.clone();
         loop {
-            let Some(block) = value.inner().block() else {
-                return Err(IndexerError::InvalidCertificateValue(value.hash()));
-            };
-            if !value.inner().is_confirmed() {
-                return Err(IndexerError::InvalidCertificateValue(value.hash()));
-            };
+            let header = &value.inner().block().header;
             values.push(value.clone());
-            if let Some(hash) = block.previous_block_hash {
+            if let Some(hash) = header.previous_block_hash {
                 match latest_block {
                     LatestBlock::LatestHash(latest_hash) if latest_hash != hash => {
                         value = listener.service.get_value(chain_id, Some(hash)).await?;
                         continue;
                     }
-                    LatestBlock::StartHeight(start) if block.height > start => {
+                    LatestBlock::StartHeight(start) if header.height > start => {
                         value = listener.service.get_value(chain_id, Some(hash)).await?;
                         continue;
                     }

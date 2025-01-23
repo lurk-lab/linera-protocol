@@ -12,7 +12,7 @@ repository.workspace = true
 version.workspace = true
 
 [features]
-test = ["tokio/macros", "linera-views/test"]
+test = ["tokio/macros", "linera-base/test", "linera-views/test", "proptest"]
 fs = ["tokio/fs"]
 metrics = ["prometheus", "linera-views/metrics"]
 unstable-oracles = []
@@ -53,6 +53,7 @@ linera-witty = { workspace = true, features = ["log", "macros"] }
 lru.workspace = true
 oneshot.workspace = true
 prometheus = { workspace = true, optional = true }
+proptest = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["blocking", "json"] }
 serde.workspace = true
 serde_bytes.workspace = true
@@ -72,21 +73,22 @@ wasmer-compiler-singlepass.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["rt"] }
-wasmer = { workspace = true, optional = true, features = ["js-default", "js-serializable-module"] }
+wasmer = { workspace = true, optional = true, features = ["js-default"] }
 
 [dev-dependencies]
 anyhow.workspace = true
 assert_matches.workspace = true
 bcs.workspace = true
-counter.workspace = true
 linera-base = { workspace = true, features = ["test"] }
-linera-execution = { path = ".", default-features = false, features = ["test"] }
+linera-execution = { path = ".", default-features = false, features = ["fs", "test"] }
 linera-witty = { workspace = true, features = ["log", "macros", "test"] }
+proptest.workspace = true
 test-case.workspace = true
 test-log = { workspace = true, features = ["trace"] }
+test-strategy.workspace = true
 tokio = { workspace = true, features = ["rt", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
-wasmer = { workspace = true, features = ["wat"] }
+wasmer = { workspace = true, features = ["singlepass", "wat"] }
 
 [build-dependencies]
 cfg_aliases.workspace = true

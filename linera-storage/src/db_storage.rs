@@ -10,13 +10,11 @@ use dashmap::DashMap;
 use linera_base::{
     crypto::CryptoHash,
     data_types::{Blob, TimeDelta, Timestamp},
+    hashed::Hashed,
     identifiers::{BlobId, ChainId, UserApplicationId},
 };
 use linera_chain::{
-    types::{
-        Certificate, CertificateValue, ConfirmedBlockCertificate, HashedCertificateValue,
-        LiteCertificate,
-    },
+    types::{ConfirmedBlock, ConfirmedBlockCertificate, LiteCertificate},
     ChainStateView,
 };
 use linera_execution::{
@@ -90,10 +88,10 @@ static CONTAINS_CERTIFICATE_COUNTER: LazyLock<IntCounterVec> = LazyLock::new(|| 
 /// The metric counting how often a hashed certificate value is read from storage.
 #[cfg(with_metrics)]
 #[doc(hidden)]
-pub static READ_HASHED_CERTIFICATE_VALUE_COUNTER: LazyLock<IntCounterVec> = LazyLock::new(|| {
+pub static READ_HASHED_CONFIRMED_BLOCK_COUNTER: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec(
-        "read_hashed_certificate_value",
-        "The metric counting how often a hashed certificate value is read from storage",
+        "read_hashed_confirmed_block",
+        "The metric counting how often a hashed confirmed block is read from storage",
         &[],
     )
 });
@@ -187,6 +185,45 @@ pub static LOAD_CHAIN_LATENCY: LazyLock<HistogramVec> = LazyLock::new(|| {
     )
 });
 
+trait BatchExt {
+    fn add_blob(&mut self, blob: &Blob) -> Result<(), ViewError>;
+
+    fn add_blob_state(&mut self, blob_id: BlobId, blob_state: &BlobState) -> Result<(), ViewError>;
+
+    fn add_certificate(&mut self, certificate: &ConfirmedBlockCertificate)
+        -> Result<(), ViewError>;
+}
+
+impl BatchExt for Batch {
+    fn add_blob(&mut self, blob: &Blob) -> Result<(), ViewError> {
+        #[cfg(with_metrics)]
+        WRITE_BLOB_COUNTER.with_label_values(&[]).inc();
+        let blob_key = bcs::to_bytes(&BaseKey::Blob(blob.id()))?;
+        self.put_key_value(blob_key.to_vec(), &blob.bytes())?;
+        Ok(())
+    }
+
+    fn add_blob_state(&mut self, blob_id: BlobId, blob_state: &BlobState) -> Result<(), ViewError> {
+        let blob_state_key = bcs::to_bytes(&BaseKey::BlobState(blob_id))?;
+        self.put_key_value(blob_state_key.to_vec(), blob_state)?;
+        Ok(())
+    }
+
+    fn add_certificate(
+        &mut self,
+        certificate: &ConfirmedBlockCertificate,
+    ) -> Result<(), ViewError> {
+        #[cfg(with_metrics)]
+        WRITE_CERTIFICATE_COUNTER.with_label_values(&[]).inc();
+        let hash = certificate.hash();
+        let cert_key = bcs::to_bytes(&BaseKey::Certificate(hash))?;
+        let value_key = bcs::to_bytes(&BaseKey::ConfirmedBlock(hash))?;
+        self.put_key_value(cert_key.to_vec(), &certificate.lite_certificate())?;
+        self.put_key_value(value_key.to_vec(), certificate.value())?;
+        Ok(())
+    }
+}
+
 /// Main implementation of the [`Storage`] trait.
 #[derive(Clone)]
 pub struct DbStorage<Store, Clock> {
@@ -202,7 +239,7 @@ pub struct DbStorage<Store, Clock> {
 enum BaseKey {
     ChainState(ChainId),
     Certificate(CryptoHash),
-    CertificateValue(CryptoHash),
+    ConfirmedBlock(CryptoHash),
     Blob(BlobId),
     BlobState(BlobId),
 }
@@ -225,7 +262,8 @@ impl DualStoreRootKeyAssignment for ChainStatesFirstAssignment {
 #[derive(Clone)]
 pub struct WallClock;
 
-#[async_trait]
+#[cfg_attr(not(web), async_trait)]
+#[cfg_attr(web, async_trait(?Send))]
 impl Clock for WallClock {
     fn current_time(&self) -> Timestamp {
         Timestamp::now()
@@ -282,7 +320,8 @@ impl TestClockInner {
 pub struct TestClock(Arc<std::sync::Mutex<TestClockInner>>);
 
 #[cfg(with_testing)]
-#[async_trait]
+#[cfg_attr(not(web), async_trait)]
+#[cfg_attr(web, async_trait(?Send))]
 impl Clock for TestClock {
     fn current_time(&self) -> Timestamp {
         self.lock().time
@@ -331,7 +370,8 @@ impl TestClock {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(web), async_trait)]
+#[cfg_attr(web, async_trait(?Send))]
 impl<Store, C> Storage for DbStorage<Store, C>
 where
     Store: KeyValueStore + Clone + Send + Sync + 'static,
@@ -398,17 +438,14 @@ where
         Ok(test)
     }
 
-    async fn read_hashed_certificate_value(
+    async fn read_hashed_confirmed_block(
         &self,
         hash: CryptoHash,
-    ) -> Result<HashedCertificateValue, ViewError> {
-        let value_key = bcs::to_bytes(&BaseKey::CertificateValue(hash))?;
-        let maybe_value = self
-            .store
-            .read_value::<CertificateValue>(&value_key)
-            .await?;
+    ) -> Result<Hashed<ConfirmedBlock>, ViewError> {
+        let value_key = bcs::to_bytes(&BaseKey::ConfirmedBlock(hash))?;
+        let maybe_value = self.store.read_value::<ConfirmedBlock>(&value_key).await?;
         #[cfg(with_metrics)]
-        READ_HASHED_CERTIFICATE_VALUE_COUNTER
+        READ_HASHED_CONFIRMED_BLOCK_COUNTER
             .with_label_values(&[])
             .inc();
         let value = maybe_value.ok_or_else(|| ViewError::not_found("value for hash", hash))?;
@@ -425,6 +462,9 @@ where
     }
 
     async fn read_blobs(&self, blob_ids: &[BlobId]) -> Result<Vec<Option<Blob>>, ViewError> {
+        if blob_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let blob_keys = blob_ids
             .iter()
             .map(|blob_id| bcs::to_bytes(&BaseKey::Blob(*blob_id)))
@@ -455,6 +495,9 @@ where
     }
 
     async fn read_blob_states(&self, blob_ids: &[BlobId]) -> Result<Vec<BlobState>, ViewError> {
+        if blob_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let blob_state_keys = blob_ids
             .iter()
             .map(|blob_id| bcs::to_bytes(&BaseKey::BlobState(*blob_id)))
@@ -475,22 +518,19 @@ where
         Ok(blob_states)
     }
 
-    async fn read_hashed_certificate_values_downward(
+    async fn read_hashed_confirmed_blocks_downward(
         &self,
         from: CryptoHash,
         limit: u32,
-    ) -> Result<Vec<HashedCertificateValue>, ViewError> {
+    ) -> Result<Vec<Hashed<ConfirmedBlock>>, ViewError> {
         let mut hash = Some(from);
         let mut values = Vec::new();
         for _ in 0..limit {
             let Some(next_hash) = hash else {
                 break;
             };
-            let value = self.read_hashed_certificate_value(next_hash).await?;
-            let Some(executed_block) = value.inner().executed_block() else {
-                break;
-            };
-            hash = executed_block.block.previous_block_hash;
+            let value = self.read_hashed_confirmed_block(next_hash).await?;
+            hash = value.inner().block().header.previous_block_hash;
             values.push(value);
         }
         Ok(values)
@@ -498,7 +538,7 @@ where
 
     async fn write_blob(&self, blob: &Blob) -> Result<(), ViewError> {
         let mut batch = Batch::new();
-        Self::add_blob_to_batch(blob, &mut batch)?;
+        batch.add_blob(blob)?;
         self.write_batch(batch).await?;
         Ok(())
     }
@@ -529,7 +569,11 @@ where
         &self,
         blob_ids: &[BlobId],
         blob_state: BlobState,
+        overwrite: bool,
     ) -> Result<Vec<Epoch>, ViewError> {
+        if blob_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let blob_state_keys = blob_ids
             .iter()
             .map(|blob_id| bcs::to_bytes(&BaseKey::BlobState(*blob_id)))
@@ -545,12 +589,12 @@ where
             let (should_write, latest_epoch) = match maybe_blob_state {
                 None => (true, blob_state.epoch),
                 Some(current_blob_state) => (
-                    current_blob_state.epoch < blob_state.epoch,
+                    overwrite && current_blob_state.epoch < blob_state.epoch,
                     current_blob_state.epoch.max(blob_state.epoch),
                 ),
             };
             if should_write {
-                Self::add_blob_state_to_batch(*blob_id, &blob_state, &mut batch)?;
+                batch.add_blob_state(*blob_id, &blob_state)?;
                 need_write = true;
             }
             latest_epoches.push(latest_epoch);
@@ -567,15 +611,37 @@ where
         blob_state: &BlobState,
     ) -> Result<(), ViewError> {
         let mut batch = Batch::new();
-        Self::add_blob_state_to_batch(blob_id, blob_state, &mut batch)?;
+        batch.add_blob_state(blob_id, blob_state)?;
         self.write_batch(batch).await?;
         Ok(())
     }
 
+    async fn maybe_write_blobs(&self, blobs: &[Blob]) -> Result<Vec<bool>, ViewError> {
+        if blobs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let blob_state_keys = blobs
+            .iter()
+            .map(|blob| bcs::to_bytes(&BaseKey::BlobState(blob.id())))
+            .collect::<Result<_, _>>()?;
+        let blob_states = self.store.contains_keys(blob_state_keys).await?;
+        let mut batch = Batch::new();
+        for (blob, has_state) in blobs.iter().zip(&blob_states) {
+            if *has_state {
+                batch.add_blob(blob)?;
+            }
+        }
+        self.write_batch(batch).await?;
+        Ok(blob_states)
+    }
+
     async fn write_blobs(&self, blobs: &[Blob]) -> Result<(), ViewError> {
+        if blobs.is_empty() {
+            return Ok(());
+        }
         let mut batch = Batch::new();
         for blob in blobs {
-            Self::add_blob_to_batch(blob, &mut batch)?;
+            batch.add_blob(blob)?;
         }
         self.write_batch(batch).await
     }
@@ -587,9 +653,9 @@ where
     ) -> Result<(), ViewError> {
         let mut batch = Batch::new();
         for blob in blobs {
-            Self::add_blob_to_batch(blob, &mut batch)?;
+            batch.add_blob(blob)?;
         }
-        Self::add_certificate_to_batch(certificate, &mut batch)?;
+        batch.add_certificate(certificate)?;
         self.write_batch(batch).await
     }
 
@@ -620,6 +686,9 @@ where
         hashes: I,
     ) -> Result<Vec<ConfirmedBlockCertificate>, ViewError> {
         let hashes = hashes.into_iter().collect::<Vec<_>>();
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
         let keys = Self::get_keys_for_certificates(&hashes)?;
         let values = self.store.read_multi_values_bytes(keys).await;
         if values.is_ok() {
@@ -651,7 +720,7 @@ where
             .iter()
             .flat_map(|hash| {
                 let cert_key = bcs::to_bytes(&BaseKey::Certificate(*hash));
-                let value_key = bcs::to_bytes(&BaseKey::CertificateValue(*hash));
+                let value_key = bcs::to_bytes(&BaseKey::ConfirmedBlock(*hash));
                 vec![cert_key, value_key]
             })
             .collect::<Result<_, _>>()?)
@@ -668,46 +737,11 @@ where
             .as_ref()
             .ok_or_else(|| ViewError::not_found("value bytes for hash", hash))?;
         let cert = bcs::from_bytes::<LiteCertificate>(cert_bytes)?;
-        let value = bcs::from_bytes::<CertificateValue>(value_bytes)?;
+        let value = bcs::from_bytes::<ConfirmedBlock>(value_bytes)?;
         let certificate = cert
             .with_value(value.with_hash_unchecked(hash))
             .ok_or(ViewError::InconsistentEntries)?;
-        Ok(certificate
-            .try_into()
-            .expect("To store only confirmed certificates"))
-    }
-
-    fn add_blob_to_batch(blob: &Blob, batch: &mut Batch) -> Result<(), ViewError> {
-        #[cfg(with_metrics)]
-        WRITE_BLOB_COUNTER.with_label_values(&[]).inc();
-        let blob_key = bcs::to_bytes(&BaseKey::Blob(blob.id()))?;
-        batch.put_key_value(blob_key.to_vec(), &blob.inner_bytes())?;
-        Ok(())
-    }
-
-    fn add_blob_state_to_batch(
-        blob_id: BlobId,
-        blob_state: &BlobState,
-        batch: &mut Batch,
-    ) -> Result<(), ViewError> {
-        let blob_state_key = bcs::to_bytes(&BaseKey::BlobState(blob_id))?;
-        batch.put_key_value(blob_state_key.to_vec(), blob_state)?;
-        Ok(())
-    }
-
-    fn add_certificate_to_batch(
-        certificate: &ConfirmedBlockCertificate,
-        batch: &mut Batch,
-    ) -> Result<(), ViewError> {
-        #[cfg(with_metrics)]
-        WRITE_CERTIFICATE_COUNTER.with_label_values(&[]).inc();
-        let hash = certificate.hash();
-        let cert_key = bcs::to_bytes(&BaseKey::Certificate(hash))?;
-        let value_key = bcs::to_bytes(&BaseKey::CertificateValue(hash))?;
-        let old_certificate: Certificate = certificate.clone().into();
-        batch.put_key_value(cert_key.to_vec(), &old_certificate.lite_certificate())?;
-        batch.put_key_value(value_key.to_vec(), old_certificate.value())?;
-        Ok(())
+        Ok(certificate)
     }
 
     async fn write_batch(&self, batch: Batch) -> Result<(), ViewError> {

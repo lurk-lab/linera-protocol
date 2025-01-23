@@ -25,7 +25,7 @@ pub struct DualStoreConfig<C1, C2> {
 }
 
 /// The store in use.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum StoreInUse {
     /// The first store.
     First,

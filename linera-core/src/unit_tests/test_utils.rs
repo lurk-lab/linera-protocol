@@ -10,24 +10,27 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{
+    future::Either,
     lock::{Mutex, MutexGuard},
     Future,
 };
 use linera_base::{
     crypto::*,
     data_types::*,
-    identifiers::{BlobId, ChainDescription, ChainId, UserApplicationId},
+    identifiers::{BlobId, ChainDescription, ChainId},
 };
 use linera_chain::{
     data_types::BlockProposal,
-    types::{Certificate, ConfirmedBlockCertificate, HashedCertificateValue, LiteCertificate},
+    types::{
+        CertificateKind, ConfirmedBlock, ConfirmedBlockCertificate, GenericCertificate,
+        LiteCertificate, Timeout, ValidatedBlock,
+    },
 };
 use linera_execution::{
     committee::{Committee, ValidatorName},
-    test_utils::{register_mock_applications_internal, MockApplication},
-    ExecutionRuntimeContext, ExecutionStateView, ResourceControlPolicy, WasmRuntime,
+    ResourceControlPolicy, WasmRuntime,
 };
-use linera_storage::{ChainRuntimeContext, DbStorage, Storage, TestClock};
+use linera_storage::{DbStorage, Storage, TestClock};
 #[cfg(all(not(target_arch = "wasm32"), feature = "storage-service"))]
 use linera_storage_service::client::ServiceStoreClient;
 use linera_version::VersionInfo;
@@ -36,8 +39,7 @@ use linera_views::dynamo_db::DynamoDbStore;
 #[cfg(feature = "scylladb")]
 use linera_views::scylla_db::ScyllaDbStore;
 use linera_views::{
-    context::Context, memory::MemoryStore, random::generate_test_namespace,
-    store::TestKeyValueStore as _,
+    memory::MemoryStore, random::generate_test_namespace, store::TestKeyValueStore as _,
 };
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -55,7 +57,8 @@ use crate::{
         ValidatorNodeProvider,
     },
     notifier::ChannelNotifier,
-    worker::{NetworkActions, Notification, WorkerState},
+    updater::DEFAULT_GRACE_PERIOD,
+    worker::{NetworkActions, Notification, ProcessableCertificate, WorkerState},
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -121,14 +124,33 @@ where
         .await
     }
 
-    async fn handle_certificate(
+    async fn handle_timeout_certificate(
         &self,
-        certificate: Certificate,
-        blobs: Vec<Blob>,
+        certificate: GenericCertificate<Timeout>,
+    ) -> Result<ChainInfoResponse, NodeError> {
+        self.spawn_and_receive(move |validator, sender| {
+            validator.do_handle_certificate(certificate, sender)
+        })
+        .await
+    }
+
+    async fn handle_validated_certificate(
+        &self,
+        certificate: GenericCertificate<ValidatedBlock>,
+    ) -> Result<ChainInfoResponse, NodeError> {
+        self.spawn_and_receive(move |validator, sender| {
+            validator.do_handle_certificate(certificate, sender)
+        })
+        .await
+    }
+
+    async fn handle_confirmed_certificate(
+        &self,
+        certificate: GenericCertificate<ConfirmedBlock>,
         _delivery: CrossChainMessageDelivery,
     ) -> Result<ChainInfoResponse, NodeError> {
         self.spawn_and_receive(move |validator, sender| {
-            validator.do_handle_certificate(certificate, blobs, sender)
+            validator.do_handle_certificate(certificate, sender)
         })
         .await
     }
@@ -156,24 +178,42 @@ where
         Ok(CryptoHash::test_hash("genesis config"))
     }
 
-    async fn download_blob_content(&self, blob_id: BlobId) -> Result<BlobContent, NodeError> {
+    async fn upload_blob(&self, content: BlobContent) -> Result<BlobId, NodeError> {
+        self.spawn_and_receive(move |validator, sender| validator.do_upload_blob(content, sender))
+            .await
+    }
+
+    async fn download_blob(&self, blob_id: BlobId) -> Result<BlobContent, NodeError> {
+        self.spawn_and_receive(move |validator, sender| validator.do_download_blob(blob_id, sender))
+            .await
+    }
+
+    async fn download_pending_blob(
+        &self,
+        chain_id: ChainId,
+        blob_id: BlobId,
+    ) -> Result<BlobContent, NodeError> {
         self.spawn_and_receive(move |validator, sender| {
-            validator.do_download_blob_content(blob_id, sender)
+            validator.do_download_pending_blob(chain_id, blob_id, sender)
         })
         .await
     }
 
-    async fn download_certificate_value(
+    async fn handle_pending_blob(
+        &self,
+        chain_id: ChainId,
+        blob: BlobContent,
+    ) -> Result<ChainInfoResponse, NodeError> {
+        self.spawn_and_receive(move |validator, sender| {
+            validator.do_handle_pending_blob(chain_id, blob, sender)
+        })
+        .await
+    }
+
+    async fn download_certificate(
         &self,
         hash: CryptoHash,
-    ) -> Result<HashedCertificateValue, NodeError> {
-        self.spawn_and_receive(move |validator, sender| {
-            validator.do_download_certificate_value(hash, sender)
-        })
-        .await
-    }
-
-    async fn download_certificate(&self, hash: CryptoHash) -> Result<Certificate, NodeError> {
+    ) -> Result<ConfirmedBlockCertificate, NodeError> {
         self.spawn_and_receive(move |validator, sender| {
             validator.do_download_certificate(hash, sender)
         })
@@ -184,12 +224,11 @@ where
     async fn download_certificates(
         &self,
         hashes: Vec<CryptoHash>,
-    ) -> Result<Vec<Certificate>, NodeError> {
+    ) -> Result<Vec<ConfirmedBlockCertificate>, NodeError> {
         self.spawn_and_receive(move |validator, sender| {
             validator.do_download_certificates(hashes, sender)
         })
         .await
-        .map(|certs| certs.into_iter().map(Certificate::from).collect())
     }
 
     async fn blob_last_used_by(&self, blob_id: BlobId) -> Result<CryptoHash, NodeError> {
@@ -312,13 +351,12 @@ where
         }
     }
 
-    async fn handle_certificate(
-        certificate: Certificate,
+    async fn handle_certificate<T: ProcessableCertificate>(
+        certificate: GenericCertificate<T>,
         validator: &mut MutexGuard<'_, LocalValidator<S>>,
-        blobs: Vec<Blob>,
     ) -> Option<Result<ChainInfoResponse, NodeError>> {
         match validator.fault_type {
-            FaultType::DontProcessValidated if certificate.inner().is_validated() => None,
+            FaultType::DontProcessValidated if T::KIND == CertificateKind::Validated => None,
             FaultType::Honest
             | FaultType::DontSendConfirmVote
             | FaultType::Malicious
@@ -326,11 +364,7 @@ where
             | FaultType::DontSendValidateVote => Some(
                 validator
                     .state
-                    .fully_handle_certificate_with_notifications(
-                        certificate,
-                        blobs,
-                        &validator.notifier,
-                    )
+                    .fully_handle_certificate_with_notifications(certificate, &validator.notifier)
                     .await
                     .map_err(Into::into),
             ),
@@ -346,30 +380,34 @@ where
         let client = self.client.clone();
         let mut validator = client.lock().await;
         let result = async move {
-            let certificate = validator.state.full_certificate(certificate).await?;
-            self.do_handle_certificate_internal(certificate, &mut validator, vec![])
-                .await
+            match validator.state.full_certificate(certificate).await? {
+                Either::Left(confirmed) => {
+                    self.do_handle_certificate_internal(confirmed, &mut validator)
+                        .await
+                }
+                Either::Right(validated) => {
+                    self.do_handle_certificate_internal(validated, &mut validator)
+                        .await
+                }
+            }
         }
         .await;
         sender.send(result)
     }
 
-    async fn do_handle_certificate_internal(
+    async fn do_handle_certificate_internal<T: ProcessableCertificate>(
         &self,
-        certificate: Certificate,
+        certificate: GenericCertificate<T>,
         validator: &mut MutexGuard<'_, LocalValidator<S>>,
-        blobs: Vec<Blob>,
     ) -> Result<ChainInfoResponse, NodeError> {
-        let is_validated = certificate.inner().is_validated();
-        let handle_certificate_result =
-            Self::handle_certificate(certificate, validator, blobs).await;
+        let handle_certificate_result = Self::handle_certificate(certificate, validator).await;
         match handle_certificate_result {
             Some(Err(NodeError::BlobsNotFound(_))) => {
                 handle_certificate_result.expect("handle_certificate_result should be Some")
             }
             _ => match validator.fault_type {
                 FaultType::DontSendConfirmVote | FaultType::DontProcessValidated
-                    if is_validated =>
+                    if T::KIND == CertificateKind::Validated =>
                 {
                     Err(NodeError::ClientIoError {
                         error: "refusing to confirm".to_string(),
@@ -389,15 +427,14 @@ where
         }
     }
 
-    async fn do_handle_certificate(
+    async fn do_handle_certificate<T: ProcessableCertificate>(
         self,
-        certificate: Certificate,
-        blobs: Vec<Blob>,
+        certificate: GenericCertificate<T>,
         sender: oneshot::Sender<Result<ChainInfoResponse, NodeError>>,
     ) -> Result<(), Result<ChainInfoResponse, NodeError>> {
         let mut validator = self.client.lock().await;
         let result = self
-            .do_handle_certificate_internal(certificate, &mut validator, blobs)
+            .do_handle_certificate_internal(certificate, &mut validator)
             .await;
         sender.send(result)
     }
@@ -434,7 +471,24 @@ where
         sender.send(Ok(stream))
     }
 
-    async fn do_download_blob_content(
+    async fn do_upload_blob(
+        self,
+        content: BlobContent,
+        sender: oneshot::Sender<Result<BlobId, NodeError>>,
+    ) -> Result<(), Result<BlobId, NodeError>> {
+        let validator = self.client.lock().await;
+        let blob = Blob::new(content);
+        let id = blob.id();
+        let storage = validator.state.storage_client();
+        let result = match storage.maybe_write_blobs(&[blob]).await {
+            Ok(has_state) if has_state.first() == Some(&true) => Ok(id),
+            Ok(_) => Err(NodeError::BlobsNotFound(vec![id])),
+            Err(error) => Err(error.into()),
+        };
+        sender.send(result)
+    }
+
+    async fn do_download_blob(
         self,
         blob_id: BlobId,
         sender: oneshot::Sender<Result<BlobContent, NodeError>>,
@@ -446,22 +500,37 @@ where
             .read_blob(blob_id)
             .await
             .map_err(Into::into);
-        sender.send(blob.map(|blob| blob.into_inner_content()))
+        sender.send(blob.map(|blob| blob.into_content()))
     }
 
-    async fn do_download_certificate_value(
+    async fn do_download_pending_blob(
         self,
-        hash: CryptoHash,
-        sender: oneshot::Sender<Result<HashedCertificateValue, NodeError>>,
-    ) -> Result<(), Result<HashedCertificateValue, NodeError>> {
+        chain_id: ChainId,
+        blob_id: BlobId,
+        sender: oneshot::Sender<Result<BlobContent, NodeError>>,
+    ) -> Result<(), Result<BlobContent, NodeError>> {
         let validator = self.client.lock().await;
-        let certificate_value = validator
+        let result = validator
             .state
-            .storage_client()
-            .read_hashed_certificate_value(hash)
+            .download_pending_blob(chain_id, blob_id)
             .await
             .map_err(Into::into);
-        sender.send(certificate_value)
+        sender.send(result.map(|blob| blob.into_content()))
+    }
+
+    async fn do_handle_pending_blob(
+        self,
+        chain_id: ChainId,
+        blob: BlobContent,
+        sender: oneshot::Sender<Result<ChainInfoResponse, NodeError>>,
+    ) -> Result<(), Result<ChainInfoResponse, NodeError>> {
+        let validator = self.client.lock().await;
+        let result = validator
+            .state
+            .handle_pending_blob(chain_id, Blob::new(blob))
+            .await
+            .map_err(Into::into);
+        sender.send(result)
     }
 
     async fn do_download_certificate(
@@ -635,7 +704,7 @@ impl GenesisStorageBuilder {
                     initial_committee.clone(),
                     admin_id,
                     account.description,
-                    account.public_key,
+                    account.public_key.into(),
                     account.balance,
                     Timestamp::from(0),
                 )
@@ -721,11 +790,13 @@ where
         );
     }
 
-    pub async fn add_initial_chain(
+    /// Creates the root chain with the given `index`, and returns a client for it.
+    pub async fn add_root_chain(
         &mut self,
-        description: ChainDescription,
+        index: u32,
         balance: Amount,
     ) -> Result<ChainClient<NodeProvider<B::Storage>, B::Storage>, anyhow::Error> {
+        let description = ChainDescription::Root(index);
         let key_pair = KeyPair::generate();
         let public_key = key_pair.public();
         // Remember what's in the genesis store for future clients to join.
@@ -739,7 +810,7 @@ where
                         self.initial_committee.clone(),
                         self.admin_id,
                         description,
-                        public_key,
+                        public_key.into(),
                         Amount::ZERO,
                         Timestamp::from(0),
                     )
@@ -751,7 +822,7 @@ where
                         self.initial_committee.clone(),
                         self.admin_id,
                         description,
-                        public_key,
+                        public_key.into(),
                         balance,
                         Timestamp::from(0),
                     )
@@ -765,7 +836,7 @@ where
                     self.initial_committee.clone(),
                     self.admin_id,
                     description,
-                    public_key,
+                    public_key.into(),
                     balance,
                     Timestamp::from(0),
                 )
@@ -832,6 +903,7 @@ where
             [chain_id],
             format!("Client node for {:.8}", chain_id),
             NonZeroUsize::new(20).expect("Chain worker limit should not be zero"),
+            DEFAULT_GRACE_PERIOD,
         ));
         Ok(builder.create_chain_client(
             chain_id,
@@ -869,13 +941,12 @@ where
                     debug_assert!(requested_sent_certificate_hashes.len() <= 1);
                     if let Some(cert_hash) = requested_sent_certificate_hashes.pop() {
                         if let Ok(cert) = validator.download_certificate(cert_hash).await {
-                            if cert.inner().is_confirmed()
-                                && cert.inner().chain_id() == chain_id
-                                && cert.inner().height() == block_height
+                            if cert.inner().block().header.chain_id == chain_id
+                                && cert.inner().block().header.height == block_height
                             {
                                 cert.check(&self.initial_committee).unwrap();
                                 count += 1;
-                                certificate = Some(cert.try_into().unwrap());
+                                certificate = Some(cert);
                             }
                         }
                     }
@@ -1182,28 +1253,4 @@ impl StorageBuilder for ScyllaDbStorageBuilder {
     fn clock(&self) -> &TestClock {
         &self.clock
     }
-}
-
-/// Creates `count` [`MockApplication`]s and registers them in the provided [`ExecutionStateView`].
-///
-/// Returns an iterator over pairs of [`UserApplicationId`]s and their respective
-/// [`MockApplication`]s.
-pub async fn register_mock_applications<C, S>(
-    state: &mut ExecutionStateView<C>,
-    count: u64,
-    storage: S,
-) -> anyhow::Result<vec::IntoIter<(UserApplicationId, MockApplication, Blob, Blob)>>
-where
-    C: Context<Extra = ChainRuntimeContext<S>> + Clone + Send + Sync + 'static,
-    C::Extra: ExecutionRuntimeContext,
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    let mock_applications = register_mock_applications_internal(state, count).await?;
-    for (_id, _mock_application, contract_blob, service_blob) in &mock_applications {
-        storage
-            .write_blobs(&[contract_blob.clone(), service_blob.clone()])
-            .await?;
-    }
-
-    Ok(mock_applications.into_iter())
 }

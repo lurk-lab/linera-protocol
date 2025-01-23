@@ -10,17 +10,18 @@
 
 mod common;
 
+use std::{env, path::PathBuf, process::Command, time::Duration};
+
 use anyhow::Result;
 use common::INTEGRATION_TEST_GUARD;
 use linera_base::crypto::CryptoHash;
-use linera_base::data_types::BlobBytes;
+use linera_base::data_types::BlobContent;
 #[cfg(feature = "benchmark")]
 use linera_base::identifiers::AccountOwner;
 use linera_base::{
     data_types::Amount,
-    identifiers::{Account, ChainId},
+    identifiers::{Account, AccountOwner, ChainId},
 };
-use linera_sdk::contract::wit::contract_system_api::application_parameters;
 use linera_sdk::DataBlobHash;
 use linera_service::{
     cli_wrappers::{
@@ -33,10 +34,10 @@ use linera_service::{
     test_name,
 };
 use std::io::Read;
-use std::os::linux::raw::stat;
 use std::time::Instant;
-use std::{env, path::PathBuf, time::Duration};
 use test_case::test_case;
+#[cfg(feature = "storage-service")]
+use {linera_base::port::get_free_port, linera_service::cli_wrappers::Faucet};
 
 #[cfg(feature = "benchmark")]
 fn get_fungible_account_owner(client: &ClientWrapper) -> AccountOwner {
@@ -191,7 +192,7 @@ async fn test_end_to_end_reconfiguration(config: LocalNetConfig) -> Result<()> {
         net.remove_validator(i)?;
     }
 
-    let recipient = Owner::from(KeyPair::generate().public());
+    let recipient = AccountOwner::User(Owner::from(KeyPair::generate().public()));
     client
         .transfer_with_accounts(
             Amount::from_tokens(5),
@@ -200,7 +201,7 @@ async fn test_end_to_end_reconfiguration(config: LocalNetConfig) -> Result<()> {
         )
         .await?;
 
-    if let Some(node_service_2) = node_service_2 {
+    if let Some(mut node_service_2) = node_service_2 {
         node_service_2.process_inbox(&chain_2).await?;
         let query = format!(
             "query {{ chain(chainId:\"{chain_2}\") {{
@@ -222,6 +223,8 @@ async fn test_end_to_end_reconfiguration(config: LocalNetConfig) -> Result<()> {
         let committees = &response["chain"]["executionState"]["system"]["committees"];
         let epochs = committees.as_object().unwrap().keys().collect::<Vec<_>>();
         assert_eq!(&epochs, &["7"]);
+
+        node_service_2.ensure_is_running()?;
     } else {
         client_2.sync(chain_2).await?;
         client_2.process_inbox(chain_2).await?;
@@ -313,13 +316,13 @@ async fn test_end_to_end_receipt_of_old_create_committee_messages(
     }
 
     // Create a new chain starting on the new epoch
-    let new_owner_key = client.keygen().await?;
+    let new_owner = client.keygen().await?;
     let ClaimOutcome {
         chain_id,
         message_id,
         ..
-    } = faucet.claim(&new_owner_key).await?;
-    client.assign(new_owner_key, message_id).await?;
+    } = faucet.claim(&new_owner).await?;
+    client.assign(new_owner, message_id).await?;
 
     // Attempt to receive the existing epoch change message
     client.process_inbox(chain_id).await?;
@@ -443,13 +446,13 @@ async fn test_end_to_end_receipt_of_old_remove_committee_messages(
     }
 
     // Create a new chain starting on the new epoch
-    let new_owner_key = client.keygen().await?;
+    let new_owner = client.keygen().await?;
     let ClaimOutcome {
         chain_id,
         message_id,
         ..
-    } = faucet.claim(&new_owner_key).await?;
-    client.assign(new_owner_key, message_id).await?;
+    } = faucet.claim(&new_owner).await?;
+    client.assign(new_owner, message_id).await?;
 
     // Attempt to receive the existing epoch change messages
     client.process_inbox(chain_id).await?;
@@ -592,12 +595,14 @@ async fn test_project_publish(database: Database, network: Network) -> Result<()
     let chain = client.load_wallet()?.default_chain().unwrap();
 
     let port = get_node_port().await;
-    let node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
+    let mut node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
 
     assert_eq!(
         node_service.try_get_applications_uri(&chain).await?.len(),
         1
     );
+
+    node_service.ensure_is_running()?;
 
     net.ensure_is_running().await?;
     net.terminate().await?;
@@ -627,12 +632,14 @@ async fn test_example_publish(database: Database, network: Network) -> Result<()
     let chain = client.load_wallet()?.default_chain().unwrap();
 
     let port = get_node_port().await;
-    let node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
+    let mut node_service = client.run_node_service(port, ProcessInbox::Skip).await?;
 
     assert_eq!(
         node_service.try_get_applications_uri(&chain).await?.len(),
         1
     );
+
+    node_service.ensure_is_running()?;
 
     net.ensure_is_running().await?;
     net.terminate().await?;
@@ -661,6 +668,18 @@ async fn test_project_new() -> Result<()> {
     client
         .build_application(project_dir.as_path(), "init-test", false)
         .await?;
+
+    let mut child = Command::new("cargo")
+        .args(["fmt", "--check"])
+        .current_dir(project_dir.as_path())
+        .spawn()?;
+    assert!(child.wait()?.success());
+
+    let mut child = Command::new("cargo")
+        .arg("test")
+        .current_dir(project_dir.as_path())
+        .spawn()?;
+    assert!(child.wait()?.success());
 
     Ok(())
 }
@@ -694,7 +713,7 @@ async fn test_storage_service_wallet_lock() -> Result<()> {
     let _guard = INTEGRATION_TEST_GUARD.lock().await;
     tracing::info!("Starting test {}", test_name!());
 
-    let (_net, client) = config.instantiate().await?;
+    let (mut net, client) = config.instantiate().await?;
 
     let wallet_state = WalletState::read_from_file(client.wallet_path().as_path())?;
     let chain_id = wallet_state.default_chain().unwrap();
@@ -705,6 +724,9 @@ async fn test_storage_service_wallet_lock() -> Result<()> {
     drop(lock);
     assert!(client.process_inbox(chain_id).await.is_ok());
 
+    net.ensure_is_running().await?;
+    net.terminate().await?;
+
     Ok(())
 }
 
@@ -713,14 +735,23 @@ async fn test_storage_service_wallet_lock() -> Result<()> {
 async fn test_storage_service_linera_net_up_simple() -> Result<()> {
     use std::{
         io::{BufRead, BufReader},
-        process::{Command, Stdio},
+        process::Stdio,
     };
 
     let _guard = INTEGRATION_TEST_GUARD.lock().await;
     tracing::info!("Starting test {}", test_name!());
 
+    let port = get_free_port().await?;
+
     let mut command = Command::new(env!("CARGO_BIN_EXE_linera"));
-    command.args(["net", "up"]);
+    command.args([
+        "net",
+        "up",
+        "--with-faucet-chain",
+        "1",
+        "--faucet-port",
+        &port.to_string(),
+    ]);
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -728,32 +759,49 @@ async fn test_storage_service_linera_net_up_simple() -> Result<()> {
 
     let stdout = BufReader::new(child.stdout.take().unwrap());
     let stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut lines = stderr.lines();
 
-    for line in stderr.lines() {
+    let mut is_ready = false;
+    for line in &mut lines {
         let line = line?;
         if line.starts_with("READY!") {
-            let mut exports = stdout.lines();
-            assert!(exports
-                .next()
-                .unwrap()?
-                .starts_with("export LINERA_WALLET="));
-            assert!(exports
-                .next()
-                .unwrap()?
-                .starts_with("export LINERA_STORAGE="));
-            assert_eq!(exports.next().unwrap()?, "");
-
-            // Send SIGINT to the child process.
-            Command::new("kill")
-                .args(["-s", "INT", &child.id().to_string()])
-                .output()?;
-
-            assert!(exports.next().is_none());
-            assert!(child.wait()?.success());
-            return Ok(());
+            is_ready = true;
+            break;
         }
     }
-    panic!("Unexpected EOF for stderr");
+    assert!(is_ready, "Unexpected EOF for stderr");
+
+    // Echo faucet stderr for debugging and to empty the buffer.
+    std::thread::spawn(move || {
+        for line in lines {
+            let line = line.unwrap();
+            eprintln!("{}", line);
+        }
+    });
+
+    let mut exports = stdout.lines();
+    assert!(exports
+        .next()
+        .unwrap()?
+        .starts_with("export LINERA_WALLET="));
+    assert!(exports
+        .next()
+        .unwrap()?
+        .starts_with("export LINERA_STORAGE="));
+    assert_eq!(exports.next().unwrap()?, "");
+
+    // Test faucet.
+    let faucet = Faucet::new(format!("http://localhost:{}/", port));
+    faucet.version_info().await.unwrap();
+
+    // Send SIGINT to the child process.
+    Command::new("kill")
+        .args(["-s", "INT", &child.id().to_string()])
+        .output()?;
+
+    assert!(exports.next().is_none());
+    assert!(child.wait()?.success());
+    return Ok(());
 }
 
 #[cfg(feature = "benchmark")]
@@ -776,9 +824,9 @@ async fn test_end_to_end_benchmark(mut config: LocalNetConfig) -> Result<()> {
     let (mut net, client) = config.instantiate().await?;
 
     assert_eq!(client.load_wallet()?.num_chains(), 3);
-    // Launch local benchmark using all user chains and creating additional ones.
+    // Launch local benchmark using some additional chains.
     client.benchmark(2, 4, 10, None).await?;
-    assert_eq!(client.load_wallet()?.num_chains(), 4);
+    assert_eq!(client.load_wallet()?.num_chains(), 7);
 
     // Now we run the benchmark again, with the fungible token application instead of the
     // native token.
@@ -866,12 +914,12 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
     let proof_size = std::fs::File::open(proof_path)?.read_to_end(&mut proof_bytes)?;
     assert!(proof_size > 0);
 
-    let proof_as_blob = BlobBytes(proof_bytes.clone());
+    let proof_as_blob = BlobContent::new_data(proof_bytes.clone());
 
     let blob_hash = CryptoHash::new(&proof_as_blob);
     let data_blob_hash = DataBlobHash(blob_hash);
     let res_blob_hash = node_service
-        .publish_data_blob(&chain, proof_as_blob.0)
+        .publish_data_blob(&chain, proof_as_blob.into_bytes().to_vec())
         .await?;
     assert_eq!(res_blob_hash, blob_hash);
 
@@ -896,7 +944,10 @@ async fn test_end_to_end_proof_verifier(mut config: LocalNetConfig) -> Result<()
         ))
         .await?;
 
-    tracing::info!("Transaction to verify proof successfully sent and executed!");
+    tracing::info!(
+        "Transaction to verify proof successfully sent and executed! {}",
+        res
+    );
 
     let verified_proof: bool = application.query_json("verifiedProof").await?;
     assert!(verified_proof);

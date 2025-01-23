@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use futures::{channel::mpsc, stream::StreamExt};
-use linera_base::time::Duration;
+use linera_base::{data_types::Blob, time::Duration};
 use linera_core::{
     node::NodeError,
     worker::{NetworkActions, WorkerError, WorkerState},
@@ -190,7 +190,14 @@ impl<S> MessageHandler for RunningServerState<S>
 where
     S: Storage + Clone + Send + Sync + 'static,
 {
-    #[instrument(target = "simple_server", skip_all, fields(nickname = self.server.state.nickname(), chain_id = ?message.target_chain_id()))]
+    #[instrument(
+        target = "simple_server",
+        skip_all,
+        fields(
+            nickname = self.server.state.nickname(),
+            chain_id = ?message.target_chain_id()
+        )
+    )]
     async fn handle_message(&mut self, message: RpcMessage) -> Option<RpcMessage> {
         let reply = match message {
             RpcMessage::BlockProposal(message) => {
@@ -199,7 +206,7 @@ where
                         // Cross-shard requests
                         self.handle_network_actions(actions);
                         // Response
-                        Ok(Some(info.into()))
+                        Ok(Some(RpcMessage::ChainInfoResponse(Box::new(info))))
                     }
                     Err(error) => {
                         warn!(nickname = self.server.state.nickname(), %error, "Failed to handle block proposal");
@@ -227,7 +234,7 @@ where
                             }
                         }
                         // Response
-                        Ok(Some(info.into()))
+                        Ok(Some(RpcMessage::ChainInfoResponse(Box::new(info))))
                     }
                     Err(error) => {
                         if let WorkerError::MissingCertificateValue = &error {
@@ -239,7 +246,48 @@ where
                     }
                 }
             }
-            RpcMessage::Certificate(request) => {
+            RpcMessage::TimeoutCertificate(request) => {
+                match self
+                    .server
+                    .state
+                    .handle_timeout_certificate(request.certificate)
+                    .await
+                {
+                    Ok((info, actions)) => {
+                        // Cross-shard requests
+                        self.handle_network_actions(actions);
+                        // Response
+                        Ok(Some(RpcMessage::ChainInfoResponse(Box::new(info))))
+                    }
+                    Err(error) => {
+                        error!(nickname = self.server.state.nickname(), %error, "Failed to handle timeout certificate");
+                        Err(error.into())
+                    }
+                }
+            }
+            RpcMessage::ValidatedCertificate(request) => {
+                match self
+                    .server
+                    .state
+                    .handle_validated_certificate(request.certificate)
+                    .await
+                {
+                    Ok((info, actions)) => {
+                        // Cross-shard requests
+                        self.handle_network_actions(actions);
+                        // Response
+                        Ok(Some(RpcMessage::ChainInfoResponse(Box::new(info))))
+                    }
+                    Err(error) => {
+                        error!(
+                            nickname = self.server.state.nickname(), %error,
+                            "Failed to handle validated certificate"
+                        );
+                        Err(error.into())
+                    }
+                }
+            }
+            RpcMessage::ConfirmedCertificate(request) => {
                 let (sender, receiver) = request
                     .wait_for_outgoing_messages
                     .then(oneshot::channel)
@@ -247,7 +295,7 @@ where
                 match self
                     .server
                     .state
-                    .handle_certificate(request.certificate, request.blobs, sender)
+                    .handle_confirmed_certificate(request.certificate, sender)
                     .await
                 {
                     Ok((info, actions)) => {
@@ -259,10 +307,10 @@ where
                             }
                         }
                         // Response
-                        Ok(Some(info.into()))
+                        Ok(Some(RpcMessage::ChainInfoResponse(Box::new(info))))
                     }
                     Err(error) => {
-                        error!(nickname = self.server.state.nickname(), %error, "Failed to handle certificate");
+                        error!(nickname = self.server.state.nickname(), %error, "Failed to handle confirmed certificate");
                         Err(error.into())
                     }
                 }
@@ -273,7 +321,7 @@ where
                         // Cross-shard requests
                         self.handle_network_actions(actions);
                         // Response
-                        Ok(Some(info.into()))
+                        Ok(Some(RpcMessage::ChainInfoResponse(Box::new(info))))
                     }
                     Err(error) => {
                         error!(nickname = self.server.state.nickname(), %error, "Failed to handle chain info query");
@@ -287,14 +335,51 @@ where
                         self.handle_network_actions(actions);
                     }
                     Err(error) => {
-                        error!(nickname = self.server.state.nickname(), %error, "Failed to handle cross-chain request");
+                        let nickname = self.server.state.nickname();
+                        error!(nickname, %error, "Failed to handle cross-chain request");
                     }
                 }
                 // No user to respond to.
                 Ok(None)
             }
+            RpcMessage::DownloadPendingBlob(request) => {
+                let (chain_id, blob_id) = *request;
+                match self
+                    .server
+                    .state
+                    .download_pending_blob(chain_id, blob_id)
+                    .await
+                {
+                    Ok(blob) => Ok(Some(RpcMessage::DownloadPendingBlobResponse(Box::new(
+                        blob.into(),
+                    )))),
+                    Err(error) => {
+                        let nickname = self.server.state.nickname();
+                        error!(nickname, %error, "Failed to handle pending blob request");
+                        Err(error.into())
+                    }
+                }
+            }
+            RpcMessage::HandlePendingBlob(request) => {
+                let (chain_id, blob_content) = *request;
+                match self
+                    .server
+                    .state
+                    .handle_pending_blob(chain_id, Blob::new(blob_content))
+                    .await
+                {
+                    Ok(info) => Ok(Some(RpcMessage::ChainInfoResponse(Box::new(info)))),
+                    Err(error) => {
+                        let nickname = self.server.state.nickname();
+                        error!(nickname, %error, "Failed to handle pending blob");
+                        Err(error.into())
+                    }
+                }
+            }
 
-            RpcMessage::VersionInfoQuery => Ok(Some(linera_version::VersionInfo::default().into())),
+            RpcMessage::VersionInfoQuery => {
+                Ok(Some(RpcMessage::VersionInfoResponse(Box::default())))
+            }
 
             RpcMessage::Vote(_)
             | RpcMessage::Error(_)
@@ -302,18 +387,19 @@ where
             | RpcMessage::VersionInfoResponse(_)
             | RpcMessage::GenesisConfigHashQuery
             | RpcMessage::GenesisConfigHashResponse(_)
-            | RpcMessage::DownloadBlobContent(_)
-            | RpcMessage::DownloadBlobContentResponse(_)
-            | RpcMessage::DownloadCertificateValue(_)
-            | RpcMessage::DownloadCertificateValueResponse(_)
+            | RpcMessage::DownloadBlob(_)
+            | RpcMessage::DownloadBlobResponse(_)
+            | RpcMessage::DownloadPendingBlobResponse(_)
+            | RpcMessage::DownloadConfirmedBlock(_)
+            | RpcMessage::DownloadConfirmedBlockResponse(_)
             | RpcMessage::BlobLastUsedBy(_)
             | RpcMessage::BlobLastUsedByResponse(_)
             | RpcMessage::MissingBlobIds(_)
             | RpcMessage::MissingBlobIdsResponse(_)
-            | RpcMessage::DownloadCertificate(_)
             | RpcMessage::DownloadCertificates(_)
-            | RpcMessage::DownloadCertificateResponse(_)
-            | RpcMessage::DownloadCertificatesResponse(_) => Err(NodeError::UnexpectedMessage),
+            | RpcMessage::DownloadCertificatesResponse(_)
+            | RpcMessage::UploadBlob(_)
+            | RpcMessage::UploadBlobResponse(_) => Err(NodeError::UnexpectedMessage),
         };
 
         self.server.packets_processed += 1;
@@ -357,7 +443,8 @@ where
                 self.server.shard_id,
                 shard_id
             );
-            if let Err(error) = self.cross_chain_sender.try_send((request.into(), shard_id)) {
+            let request = RpcMessage::CrossChainRequest(Box::new(request));
+            if let Err(error) = self.cross_chain_sender.try_send((request, shard_id)) {
                 error!(%error, "dropping cross-chain request");
                 break;
             }

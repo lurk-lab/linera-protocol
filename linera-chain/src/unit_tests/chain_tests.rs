@@ -12,6 +12,7 @@ use linera_base::{
         Amount, ApplicationPermissions, Blob, BlockHeight, Bytecode, Timestamp,
         UserApplicationDescription,
     },
+    hashed::Hashed,
     identifiers::{ApplicationId, BytecodeId, ChainId, MessageId},
     ownership::ChainOwnership,
 };
@@ -30,9 +31,9 @@ use linera_views::{
 };
 
 use crate::{
+    block::{Block, ConfirmedBlock},
     data_types::{IncomingBundle, MessageAction, MessageBundle, Origin},
     test::{make_child_block, make_first_block, BlockTestExt, MessageTestExt},
-    types::HashedCertificateValue,
     ChainError, ChainExecutionContext, ChainStateView,
 };
 
@@ -94,7 +95,7 @@ fn make_admin_message_id(height: BlockHeight) -> MessageId {
 fn make_open_chain_config() -> OpenChainConfig {
     let committee = Committee::make_simple(vec![PublicKey::test_key(1).into()]);
     OpenChainConfig {
-        ownership: ChainOwnership::single(PublicKey::test_key(0)),
+        ownership: ChainOwnership::single(PublicKey::test_key(0).into()),
         admin_id: admin_id(),
         epoch: Epoch::ZERO,
         committees: iter::once((Epoch::ZERO, committee)).collect(),
@@ -111,7 +112,7 @@ async fn test_block_size_limit() {
     let mut chain = ChainStateView::new(chain_id).await;
 
     // The size of the executed valid block below.
-    let maximum_executed_block_size = 699;
+    let maximum_executed_block_size = 675;
 
     // Initialize the chain.
     let mut config = make_open_chain_config();
@@ -170,17 +171,17 @@ async fn test_block_size_limit() {
 
     // The valid block is accepted...
     let outcome = chain.execute_block(&valid_block, time, None).await.unwrap();
-    let executed_block = outcome.with(valid_block);
+    let block = Block::new(valid_block, outcome);
 
     // ...because its size is exactly at the allowed limit.
     assert_eq!(
-        bcs::serialized_size(&executed_block).unwrap(),
+        bcs::serialized_size(&block).unwrap(),
         maximum_executed_block_size as usize
     );
 }
 
 #[tokio::test]
-async fn test_application_permissions() {
+async fn test_application_permissions() -> anyhow::Result<()> {
     let time = Timestamp::from(0);
     let message_id = make_admin_message_id(BlockHeight(3));
     let chain_id = ChainId::child(message_id);
@@ -194,7 +195,7 @@ async fn test_application_permissions() {
     extra
         .user_contracts()
         .insert(application_id, application.clone().into());
-    extra.add_blobs(vec![contract_blob, service_blob]);
+    extra.add_blobs([contract_blob, service_blob]).await?;
 
     // Initialize the chain, with a chain application.
     let config = OpenChainConfig {
@@ -203,8 +204,7 @@ async fn test_application_permissions() {
     };
     chain
         .execute_init_message(message_id, &config, time, time)
-        .await
-        .unwrap();
+        .await?;
     let open_chain_message = Message::System(SystemMessage::OpenChain(config));
 
     let register_app_message = SystemMessage::RegisterApplications {
@@ -246,11 +246,14 @@ async fn test_application_permissions() {
     let valid_block = make_first_block(chain_id)
         .with_incoming_bundle(bundle)
         .with_operation(app_operation.clone());
-    let outcome = chain.execute_block(&valid_block, time, None).await.unwrap();
-    let value = HashedCertificateValue::new_confirmed(outcome.with(valid_block));
+    let executed_block = chain
+        .execute_block(&valid_block, time, None)
+        .await?
+        .with(valid_block);
+    let value = Hashed::new(ConfirmedBlock::new(executed_block));
 
     // In the second block, other operations are still not allowed.
-    let invalid_block = make_child_block(&value.clone().try_into().unwrap())
+    let invalid_block = make_child_block(&value.clone())
         .with_simple_transfer(chain_id, Amount::ONE)
         .with_operation(app_operation.clone());
     let result = chain.execute_block(&invalid_block, time, None).await;
@@ -259,7 +262,7 @@ async fn test_application_permissions() {
     );
 
     // Also, blocks without an application operation or incoming message are forbidden.
-    let invalid_block = make_child_block(&value.clone().try_into().unwrap());
+    let invalid_block = make_child_block(&value.clone());
     let result = chain.execute_block(&invalid_block, time, None).await;
     assert_matches!(result, Err(ChainError::MissingMandatoryApplications(app_ids))
         if app_ids == vec![application_id]
@@ -268,6 +271,8 @@ async fn test_application_permissions() {
     // But app operations continue to work.
     application.expect_call(ExpectedCall::execute_operation(|_, _, _| Ok(vec![])));
     application.expect_call(ExpectedCall::default_finalize());
-    let valid_block = make_child_block(&value.try_into().unwrap()).with_operation(app_operation);
-    chain.execute_block(&valid_block, time, None).await.unwrap();
+    let valid_block = make_child_block(&value).with_operation(app_operation);
+    chain.execute_block(&valid_block, time, None).await?;
+
+    Ok(())
 }

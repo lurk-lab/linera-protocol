@@ -11,14 +11,14 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use linera_base::{
-    crypto::{CryptoHash, PublicKey},
+    crypto::CryptoHash,
     data_types::{Amount, ApplicationPermissions, TimeDelta},
     identifiers::{
         Account, ApplicationId, BytecodeId, ChainId, MessageId, Owner, UserApplicationId,
     },
     ownership::{ChainOwnership, TimeoutConfig},
 };
-use linera_core::client::BlanketMessagePolicy;
+use linera_core::{client::BlanketMessagePolicy, DEFAULT_GRACE_PERIOD};
 use linera_execution::{
     committee::ValidatorName, ResourceControlPolicy, WasmRuntime, WithWasmDefault as _,
 };
@@ -156,6 +156,11 @@ pub struct ClientOptions {
     /// an empty string.
     #[arg(long, value_parser = util::parse_chain_set)]
     pub restrict_chain_ids_to: Option<HashSet<ChainId>>,
+
+    /// An additional delay, after reaching a quorum, to wait for additional validator signatures,
+    /// as a fraction of time taken to reach quorum.
+    #[arg(long, default_value_t = DEFAULT_GRACE_PERIOD)]
+    pub grace_period: f64,
 }
 
 impl ClientOptions {
@@ -298,10 +303,6 @@ impl ClientOptions {
 
 #[derive(Clone, clap::Subcommand)]
 pub enum ClientCommand {
-    /// Print CLI help in Markdown format, and exit.
-    #[command(hide = true)]
-    HelpMarkdown,
-
     /// Transfer funds
     Transfer {
         /// Sending chain ID (must be one of our chains)
@@ -322,9 +323,9 @@ pub enum ClientCommand {
         #[arg(long = "from")]
         chain_id: Option<ChainId>,
 
-        /// Public key of the new owner (otherwise create a key pair and remember it)
-        #[arg(long = "to-public-key")]
-        public_key: Option<PublicKey>,
+        /// The new owner (otherwise create a key pair and remember it)
+        #[arg(long = "owner")]
+        owner: Option<Owner>,
 
         /// The initial balance of the new chain. This is subtracted from the parent chain's
         /// balance.
@@ -711,7 +712,7 @@ pub enum ClientCommand {
         config: ChainListenerConfig,
 
         /// The port on which to run the server
-        #[arg(long = "port", default_value = "8080")]
+        #[arg(long, default_value = "8080")]
         port: NonZeroU16,
     },
 
@@ -722,11 +723,11 @@ pub enum ClientCommand {
         chain_id: Option<ChainId>,
 
         /// The port on which to run the server
-        #[arg(long = "port", default_value = "8080")]
+        #[arg(long, default_value = "8080")]
         port: NonZeroU16,
 
         /// The number of tokens to send to each new chain.
-        #[arg(long = "amount")]
+        #[arg(long)]
         amount: Amount,
 
         /// The end timestamp: The faucet will rate-limit the token supply so it runs out of money
@@ -852,11 +853,11 @@ pub enum ClientCommand {
     /// Create an unassigned key-pair.
     Keygen,
 
-    /// Link a key owned by the wallet to a chain that was just created for that key.
+    /// Link an owner with a key pair in the wallet to a chain that was created for that owner.
     Assign {
-        /// The public key to assign.
+        /// The owner to assign.
         #[arg(long)]
-        key: PublicKey,
+        owner: Owner,
 
         /// The ID of the message that created the chain. (This uniquely describes the
         /// chain and where it was created.)
@@ -888,7 +889,31 @@ pub enum ClientCommand {
     /// Operation on the storage.
     #[command(subcommand)]
     Storage(DatabaseToolCommand),
+
+    /// Print CLI help in Markdown format, and exit.
+    #[command(hide = true)]
+    HelpMarkdown,
+
+    /// Extract a Bash and GraphQL script embedded in a markdown file and print it on
+    /// stdout.
+    #[command(hide = true)]
+    ExtractScriptFromMarkdown {
+        /// The source file
+        path: PathBuf,
+
+        /// Insert a pause of N seconds after calls to `linera service`.
+        #[arg(long, default_value = DEFAULT_PAUSE_AFTER_LINERA_SERVICE_SECS, value_parser = util::parse_secs)]
+        pause_after_linera_service: Duration,
+
+        /// Insert a pause of N seconds after GraphQL queries.
+        #[arg(long, default_value = DEFAULT_PAUSE_AFTER_GQL_MUTATIONS_SECS, value_parser = util::parse_secs)]
+        pause_after_gql_mutations: Duration,
+    },
 }
+
+// Exported for readme e2e tests.
+pub static DEFAULT_PAUSE_AFTER_LINERA_SERVICE_SECS: &str = "3";
+pub static DEFAULT_PAUSE_AFTER_GQL_MUTATIONS_SECS: &str = "3";
 
 #[derive(Clone, clap::Parser)]
 pub enum DatabaseToolCommand {
@@ -955,6 +980,7 @@ impl DatabaseToolCommand {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, clap::Parser)]
 pub enum NetCommand {
     /// Start a Local Linera Network
@@ -1004,6 +1030,16 @@ pub enum NetCommand {
         #[arg(long, num_args=0..=1)]
         binaries: Option<Option<PathBuf>>,
 
+        /// Don't build docker image. This assumes that the image is already built.
+        #[cfg(feature = "kubernetes")]
+        #[arg(long, default_value = "false")]
+        no_build: bool,
+
+        /// The name of the docker image to use.
+        #[cfg(feature = "kubernetes")]
+        #[arg(long, default_value = "linera:latest")]
+        docker_image_name: String,
+
         /// Run with a specific path where the wallet and validator input files are.
         /// If none, then a temporary directory is created.
         #[arg(long)]
@@ -1017,6 +1053,19 @@ pub enum NetCommand {
         /// External protocol used, either grpc or grpcs.
         #[arg(long, default_value = "grpc")]
         external_protocol: String,
+
+        /// If present, a faucet is started using the given chain root number (0 for the
+        /// admin chain, 1 for the first non-admin initial chain, etc).
+        #[arg(long)]
+        with_faucet_chain: Option<u32>,
+
+        /// The port on which to run the faucet server
+        #[arg(long, default_value = "8080")]
+        faucet_port: NonZeroU16,
+
+        /// The number of tokens to send to each new chain created by the faucet.
+        #[arg(long, default_value = "1000")]
+        faucet_amount: Amount,
     },
 
     /// Print a bash helper script to make `linera net up` easier to use. The script is
@@ -1068,6 +1117,9 @@ pub enum WalletCommand {
         /// Only print a non-formatted list of the wallet's chain IDs.
         #[arg(long)]
         short: bool,
+        /// Print only the chains that we have a key pair for.
+        #[arg(long)]
+        owned: bool,
     },
 
     /// Change the wallet default chain.
@@ -1164,13 +1216,13 @@ pub enum ProjectCommand {
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct ChainOwnershipConfig {
-    /// Public keys of the new super owners.
+    /// The new super owners.
     #[arg(long, num_args(0..))]
-    super_owner_public_keys: Vec<PublicKey>,
+    super_owners: Vec<Owner>,
 
-    /// Public keys of the new regular owners.
+    /// The new regular owners.
     #[arg(long, num_args(0..))]
-    owner_public_keys: Vec<PublicKey>,
+    owners: Vec<Owner>,
 
     /// Weights for the new owners.
     ///
@@ -1220,8 +1272,8 @@ impl TryFrom<ChainOwnershipConfig> for ChainOwnership {
 
     fn try_from(config: ChainOwnershipConfig) -> Result<ChainOwnership, Error> {
         let ChainOwnershipConfig {
-            super_owner_public_keys,
-            owner_public_keys,
+            super_owners,
+            owners,
             owner_weights,
             multi_leader_rounds,
             fast_round_duration,
@@ -1229,20 +1281,16 @@ impl TryFrom<ChainOwnershipConfig> for ChainOwnership {
             timeout_increment,
             fallback_duration,
         } = config;
-        if !owner_weights.is_empty() && owner_weights.len() != owner_public_keys.len() {
+        if !owner_weights.is_empty() && owner_weights.len() != owners.len() {
             return Err(Error::MisalignedWeights {
-                public_keys: owner_public_keys.len(),
+                public_keys: owners.len(),
                 weights: owner_weights.len(),
             });
         }
-        let super_owners = super_owner_public_keys
-            .into_iter()
-            .map(|pub_key| (Owner::from(pub_key), pub_key))
-            .collect();
-        let owners = owner_public_keys
+        let super_owners = super_owners.into_iter().map(Into::into).collect();
+        let owners = owners
             .into_iter()
             .zip(owner_weights.into_iter().chain(iter::repeat(100)))
-            .map(|(pub_key, weight)| (Owner::from(pub_key), (pub_key, weight)))
             .collect();
         let multi_leader_rounds = multi_leader_rounds.unwrap_or(u32::MAX);
         let timeout_config = TimeoutConfig {

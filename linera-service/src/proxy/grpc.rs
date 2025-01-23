@@ -28,19 +28,21 @@ use linera_rpc::{
     },
     grpc::{
         api::{
+            self,
             notifier_service_server::{NotifierService, NotifierServiceServer},
             validator_node_server::{ValidatorNode, ValidatorNodeServer},
             validator_worker_client::ValidatorWorkerClient,
-            BlobContent, BlobId, BlobIds, BlockProposal, Certificate, CertificateValue,
-            CertificatesBatchRequest, CertificatesBatchResponse, ChainInfoQuery, ChainInfoResult,
-            CryptoHash, HandleCertificateRequest, LiteCertificate, Notification,
-            SubscriptionRequest, VersionInfo,
+            BlobContent, BlobId, BlobIds, BlockProposal, Certificate, CertificatesBatchRequest,
+            CertificatesBatchResponse, ChainInfoQuery, ChainInfoResult, CryptoHash,
+            HandlePendingBlobRequest, LiteCertificate, Notification, PendingBlobRequest,
+            PendingBlobResult, SubscriptionRequest, VersionInfo,
         },
         pool::GrpcConnectionPool,
         GrpcProtoConversionError, GrpcProxyable, GRPC_CHUNKED_MESSAGE_FILL_LIMIT,
         GRPC_MAX_MESSAGE_SIZE,
     },
 };
+use linera_sdk::{base::Blob, views::ViewError};
 use linera_storage::Storage;
 use prost::Message;
 use tokio::{select, task::JoinSet};
@@ -332,6 +334,30 @@ where
             }
         }
     }
+
+    /// Returns the appropriate gRPC status for the given [`ViewError`].
+    fn error_to_status(err: ViewError) -> Status {
+        let mut status = match &err {
+            ViewError::TooLargeValue | ViewError::BcsError(_) => {
+                Status::invalid_argument(err.to_string())
+            }
+            ViewError::StoreError { .. }
+            | ViewError::TokioJoinError(_)
+            | ViewError::TryLockError(_)
+            | ViewError::InconsistentEntries
+            | ViewError::PostLoadValuesError
+            | ViewError::IoError(_) => Status::internal(err.to_string()),
+            ViewError::KeyTooLong | ViewError::ArithmeticError(_) => {
+                Status::out_of_range(err.to_string())
+            }
+            ViewError::NotFound(_)
+            | ViewError::BlobsNotFound(_)
+            | ViewError::CannotAcquireCollectionEntry
+            | ViewError::MissingEntries => Status::not_found(err.to_string()),
+        };
+        status.set_source(Arc::new(err));
+        status
+    }
 }
 
 #[async_trait]
@@ -366,14 +392,38 @@ where
     }
 
     #[instrument(skip_all, err(Display))]
-    async fn handle_certificate(
+    async fn handle_confirmed_certificate(
         &self,
-        request: Request<HandleCertificateRequest>,
+        request: Request<api::HandleConfirmedCertificateRequest>,
     ) -> Result<Response<ChainInfoResult>, Status> {
         let (mut client, inner) = self.worker_client(request).await?;
         Self::log_and_return_proxy_request_outcome(
-            client.handle_certificate(inner).await,
-            "handle_certificate",
+            client.handle_confirmed_certificate(inner).await,
+            "handle_confirmed_certificate",
+        )
+    }
+
+    #[instrument(skip_all, err(Display))]
+    async fn handle_validated_certificate(
+        &self,
+        request: Request<api::HandleValidatedCertificateRequest>,
+    ) -> Result<Response<ChainInfoResult>, Status> {
+        let (mut client, inner) = self.worker_client(request).await?;
+        Self::log_and_return_proxy_request_outcome(
+            client.handle_validated_certificate(inner).await,
+            "handle_validated_certificate",
+        )
+    }
+
+    #[instrument(skip_all, err(Display))]
+    async fn handle_timeout_certificate(
+        &self,
+        request: Request<api::HandleTimeoutCertificateRequest>,
+    ) -> Result<Response<ChainInfoResult>, Status> {
+        let (mut client, inner) = self.worker_client(request).await?;
+        Self::log_and_return_proxy_request_outcome(
+            client.handle_timeout_certificate(inner).await,
+            "handle_timeout_certificate",
         )
     }
 
@@ -427,7 +477,19 @@ where
     }
 
     #[instrument(skip_all, err(Display))]
-    async fn download_blob_content(
+    async fn upload_blob(&self, request: Request<BlobContent>) -> Result<Response<BlobId>, Status> {
+        let content: linera_sdk::base::BlobContent = request.into_inner().try_into()?;
+        let blob = Blob::new(content);
+        let id = blob.id();
+        let result = self.0.storage.maybe_write_blobs(&[blob]).await;
+        if !result.map_err(Self::error_to_status)?[0] {
+            return Err(Status::not_found("Blob not found"));
+        }
+        Ok(Response::new(id.try_into()?))
+    }
+
+    #[instrument(skip_all, err(Display))]
+    async fn download_blob(
         &self,
         request: Request<BlobId>,
     ) -> Result<Response<BlobContent>, Status> {
@@ -437,23 +499,58 @@ where
             .storage
             .read_blob(blob_id)
             .await
-            .map_err(|err| Status::from_error(Box::new(err)))?;
-        Ok(Response::new(blob.into_inner_content().try_into()?))
+            .map_err(Self::error_to_status)?;
+        Ok(Response::new(blob.into_content().try_into()?))
     }
 
     #[instrument(skip_all, err(Display))]
-    async fn download_certificate_value(
+    async fn download_pending_blob(
         &self,
-        request: Request<CryptoHash>,
-    ) -> Result<Response<CertificateValue>, Status> {
-        let hash = request.into_inner().try_into()?;
-        let certificate = self
-            .0
-            .storage
-            .read_hashed_certificate_value(hash)
-            .await
-            .map_err(|err| Status::from_error(Box::new(err)))?;
-        Ok(Response::new(certificate.try_into()?))
+        request: Request<PendingBlobRequest>,
+    ) -> Result<Response<PendingBlobResult>, Status> {
+        let (mut client, inner) = self.worker_client(request).await?;
+        #[cfg_attr(not(with_metrics), expect(clippy::needless_match))]
+        match client.download_pending_blob(inner).await {
+            Ok(blob_result) => {
+                #[cfg(with_metrics)]
+                PROXY_REQUEST_SUCCESS
+                    .with_label_values(&["download_pending_blob"])
+                    .inc();
+                Ok(blob_result)
+            }
+            Err(status) => {
+                #[cfg(with_metrics)]
+                PROXY_REQUEST_ERROR
+                    .with_label_values(&["download_pending_blob"])
+                    .inc();
+                Err(status)
+            }
+        }
+    }
+
+    #[instrument(skip_all, err(Display))]
+    async fn handle_pending_blob(
+        &self,
+        request: Request<HandlePendingBlobRequest>,
+    ) -> Result<Response<ChainInfoResult>, Status> {
+        let (mut client, inner) = self.worker_client(request).await?;
+        #[cfg_attr(not(with_metrics), expect(clippy::needless_match))]
+        match client.handle_pending_blob(inner).await {
+            Ok(blob_result) => {
+                #[cfg(with_metrics)]
+                PROXY_REQUEST_SUCCESS
+                    .with_label_values(&["handle_pending_blob"])
+                    .inc();
+                Ok(blob_result)
+            }
+            Err(status) => {
+                #[cfg(with_metrics)]
+                PROXY_REQUEST_ERROR
+                    .with_label_values(&["handle_pending_blob"])
+                    .inc();
+                Err(status)
+            }
+        }
     }
 
     #[instrument(skip_all, err(Display))]
@@ -467,7 +564,7 @@ where
             .storage
             .read_certificate(hash)
             .await
-            .map_err(|err| Status::from_error(Box::new(err)))?
+            .map_err(Self::error_to_status)?
             .into();
         Ok(Response::new(certificate.try_into()?))
     }
@@ -497,7 +594,7 @@ where
                 .storage
                 .read_certificates(batch.to_vec())
                 .await
-                .map_err(|err| Status::from_error(Box::new(err)))?
+                .map_err(Self::error_to_status)?
             {
                 if grpc_message_limiter.fits::<Certificate>(certificate.clone().into())? {
                     certificates.push(linera_chain::types::Certificate::from(certificate));
@@ -523,7 +620,7 @@ where
             .storage
             .read_blob_state(blob_id)
             .await
-            .map_err(|err| Status::from_error(Box::new(err)))?;
+            .map_err(Self::error_to_status)?;
         Ok(Response::new(blob_state.last_used_by.into()))
     }
 
@@ -538,7 +635,7 @@ where
             .storage
             .missing_blobs(&blob_ids)
             .await
-            .map_err(|err| Status::from_error(Box::new(err)))?;
+            .map_err(Self::error_to_status)?;
         Ok(Response::new(missing_blob_ids.try_into()?))
     }
 }
@@ -596,10 +693,13 @@ impl<T> GrpcMessageLimiter<T> {
 
 #[cfg(test)]
 mod proto_message_cap {
-    use linera_base::crypto::{KeyPair, Signature};
+    use linera_base::{
+        crypto::{KeyPair, Signature},
+        hashed::Hashed,
+    };
     use linera_chain::{
         data_types::{BlockExecutionOutcome, ExecutedBlock},
-        types::{Certificate, HashedCertificateValue},
+        types::{Certificate, ConfirmedBlock, ConfirmedBlockCertificate},
     };
     use linera_execution::committee::ValidatorName;
     use linera_sdk::base::{ChainId, TestString};
@@ -615,11 +715,11 @@ mod proto_message_cap {
             outcome: BlockExecutionOutcome::default(),
         };
         let signatures = vec![(validator, signature)];
-        Certificate::new(
-            HashedCertificateValue::new_confirmed(executed_block),
+        Certificate::Confirmed(ConfirmedBlockCertificate::new(
+            Hashed::new(ConfirmedBlock::new(executed_block)),
             Default::default(),
             signatures,
-        )
+        ))
     }
 
     #[test]

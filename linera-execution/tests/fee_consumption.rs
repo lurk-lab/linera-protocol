@@ -10,10 +10,10 @@ use std::{sync::Arc, vec};
 use linera_base::{
     crypto::{CryptoHash, PublicKey},
     data_types::{Amount, BlockHeight, Timestamp},
-    identifiers::{Account, ChainDescription, ChainId, MessageId, Owner},
+    identifiers::{Account, AccountOwner, ChainDescription, ChainId, MessageId, Owner},
 };
 use linera_execution::{
-    test_utils::{register_mock_applications, ExpectedCall, SystemExecutionState},
+    test_utils::{ExpectedCall, RegisterMockApplication, SystemExecutionState},
     ContractRuntime, ExecutionError, ExecutionOutcome, Message, MessageContext,
     RawExecutionOutcome, ResourceControlPolicy, ResourceController, TransactionTracker,
 };
@@ -116,23 +116,20 @@ async fn test_fee_consumption(
     chain_balance: Amount,
     owner_balance: Option<Amount>,
     initial_grant: Option<Amount>,
-) {
-    let state = SystemExecutionState {
+) -> anyhow::Result<()> {
+    let mut state = SystemExecutionState {
         description: Some(ChainDescription::Root(0)),
         ..SystemExecutionState::default()
     };
+    let (application_id, application) = state.register_mock_application().await?;
     let mut view = state.into_view().await;
 
-    let owner = Owner::from(PublicKey::test_key(0));
+    let signer = Owner::from(PublicKey::test_key(0));
+    let owner = AccountOwner::User(signer);
     view.system.balance.set(chain_balance);
     if let Some(owner_balance) = owner_balance {
-        view.system.balances.insert(&owner, owner_balance).unwrap();
+        view.system.balances.insert(&owner, owner_balance)?;
     }
-
-    let mut applications = register_mock_applications(&mut view, 1).await.unwrap();
-    let (application_id, application, _contract_blob, _service_blob) = applications
-        .next()
-        .expect("Caller mock application should be registered");
 
     let prices = ResourceControlPolicy {
         block: Amount::from_tokens(2),
@@ -163,7 +160,7 @@ async fn test_fee_consumption(
         });
 
     let authenticated_signer = if owner_balance.is_some() {
-        Some(owner)
+        Some(signer)
     } else {
         None
     };
@@ -176,7 +173,7 @@ async fn test_fee_consumption(
     application.expect_call(ExpectedCall::execute_message(
         move |runtime, _context, _operation| {
             for spend in spends {
-                spend.execute(runtime).unwrap();
+                spend.execute(runtime)?;
             }
             Ok(())
         },
@@ -185,7 +182,7 @@ async fn test_fee_consumption(
 
     let refund_grant_to = Some(Account {
         chain_id: ChainId::root(0),
-        owner: authenticated_signer,
+        owner: authenticated_signer.map(AccountOwner::User),
     });
     let context = MessageContext {
         chain_id: ChainId::root(0),
@@ -213,10 +210,9 @@ async fn test_fee_consumption(
         &mut txn_tracker,
         &mut controller,
     )
-    .await
-    .unwrap();
+    .await?;
 
-    let (outcomes, _, _) = txn_tracker.destructure().unwrap();
+    let (outcomes, _, _) = txn_tracker.destructure()?;
     assert_eq!(
         outcomes,
         vec![
@@ -259,7 +255,7 @@ async fn test_fee_consumption(
             };
             assert_eq!(*view.system.balance.get(), expected_chain_balance);
             assert_eq!(
-                view.system.balances.get(&owner).await.unwrap(),
+                view.system.balances.get(&owner).await?,
                 expected_owner_balance
             );
             assert_eq!(grant, Amount::ZERO);
@@ -282,12 +278,14 @@ async fn test_fee_consumption(
             };
             assert_eq!(*view.system.balance.get(), chain_balance);
             assert_eq!(
-                view.system.balances.get(&owner).await.unwrap(),
+                view.system.balances.get(&owner).await?,
                 expected_owner_balance
             );
             assert_eq!(grant, expected_grant);
         }
     }
+
+    Ok(())
 }
 
 /// A runtime operation that costs some amount of fees.

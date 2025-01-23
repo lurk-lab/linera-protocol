@@ -11,7 +11,8 @@ use linera_base::{
         Amount, ApplicationPermissions, BlockHeight, Resources, SendMessageRequest, Timestamp,
     },
     identifiers::{
-        Account, ApplicationId, ChainId, ChannelName, Destination, MessageId, Owner, StreamName,
+        Account, AccountOwner, ApplicationId, BytecodeId, ChainId, ChannelName, Destination,
+        MessageId, Owner, StreamName,
     },
     ownership::{ChainOwnership, CloseChainError},
 };
@@ -150,7 +151,7 @@ where
     }
 
     /// Returns the balance of one of the accounts on this chain.
-    pub fn owner_balance(&mut self, owner: Owner) -> Amount {
+    pub fn owner_balance(&mut self, owner: AccountOwner) -> Amount {
         wit::read_owner_balance(owner.into()).into()
     }
 
@@ -183,7 +184,7 @@ where
 
     /// Transfers an `amount` of native tokens from `source` owner account (or the current chain's
     /// balance) to `destination`.
-    pub fn transfer(&mut self, source: Option<Owner>, destination: Account, amount: Amount) {
+    pub fn transfer(&mut self, source: Option<AccountOwner>, destination: Account, amount: Amount) {
         wit::transfer(
             source.map(|source| source.into()),
             destination.into(),
@@ -221,6 +222,32 @@ where
             balance.into(),
         );
         (message_id.into(), chain_id.into())
+    }
+
+    /// Creates a new on-chain application, based on the supplied bytecode and parameters.
+    pub fn create_application<A: Contract>(
+        &mut self,
+        bytecode_id: BytecodeId,
+        parameters: &A::Parameters,
+        argument: &A::InstantiationArgument,
+        required_application_ids: Vec<ApplicationId>,
+    ) -> ApplicationId<A::Abi> {
+        let parameters = bcs::to_bytes(parameters)
+            .expect("Failed to serialize `Parameters` type for a cross-application call");
+        let argument = bcs::to_bytes(argument).expect(
+            "Failed to serialize `InstantiationArgument` type for a cross-application call",
+        );
+        let converted_application_ids: Vec<_> = required_application_ids
+            .into_iter()
+            .map(From::from)
+            .collect();
+        let application_id = wit::create_application(
+            bytecode_id.into(),
+            &parameters,
+            &argument,
+            &converted_application_ids,
+        );
+        ApplicationId::from(application_id).with_abi::<A::Abi>()
     }
 
     /// Calls another application.

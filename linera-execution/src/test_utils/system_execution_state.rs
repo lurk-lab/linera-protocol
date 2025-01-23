@@ -10,8 +10,8 @@ use std::{
 use custom_debug_derive::Debug;
 use linera_base::{
     crypto::CryptoHash,
-    data_types::{Amount, ApplicationPermissions, Timestamp},
-    identifiers::{ApplicationId, ChainDescription, ChainId, Owner},
+    data_types::{Amount, ApplicationPermissions, Blob, Timestamp},
+    identifiers::{AccountOwner, ApplicationId, BlobId, ChainDescription, ChainId, Owner},
     ownership::ChainOwnership,
 };
 use linera_views::{
@@ -21,6 +21,7 @@ use linera_views::{
     views::{CryptoHashView, View, ViewError},
 };
 
+use super::{MockApplication, RegisterMockApplication};
 use crate::{
     applications::ApplicationRegistry,
     committee::{Committee, Epoch},
@@ -42,12 +43,17 @@ pub struct SystemExecutionState {
     pub ownership: ChainOwnership,
     pub balance: Amount,
     #[debug(skip_if = BTreeMap::is_empty)]
-    pub balances: BTreeMap<Owner, Amount>,
+    pub balances: BTreeMap<AccountOwner, Amount>,
     pub timestamp: Timestamp,
     pub registry: ApplicationRegistry,
+    pub used_blobs: BTreeSet<BlobId>,
     #[debug(skip_if = Not::not)]
     pub closed: bool,
     pub application_permissions: ApplicationPermissions,
+    #[debug(skip_if = Vec::is_empty)]
+    pub extra_blobs: Vec<Blob>,
+    #[debug(skip_if = BTreeMap::is_empty)]
+    pub mock_applications: BTreeMap<ApplicationId, MockApplication>,
 }
 
 impl SystemExecutionState {
@@ -103,10 +109,25 @@ impl SystemExecutionState {
             balances,
             timestamp,
             registry,
+            used_blobs,
             closed,
             application_permissions,
+            extra_blobs,
+            mock_applications,
         } = self;
+
         let extra = TestExecutionRuntimeContext::new(chain_id, execution_runtime_config);
+        extra
+            .add_blobs(extra_blobs)
+            .await
+            .expect("Adding blobs to the `TestExecutionRuntimeContext` should not fail");
+        for (id, mock_application) in mock_applications {
+            extra
+                .user_contracts()
+                .insert(id, mock_application.clone().into());
+            extra.user_services().insert(id, mock_application.into());
+        }
+
         let namespace = generate_test_namespace();
         let root_key = &[];
         let context = MemoryContext::new_for_testing(
@@ -130,10 +151,10 @@ impl SystemExecutionState {
         view.system.committees.set(committees);
         view.system.ownership.set(ownership);
         view.system.balance.set(balance);
-        for (owner, balance) in balances {
+        for (account_owner, balance) in balances {
             view.system
                 .balances
-                .insert(&owner, balance)
+                .insert(&account_owner, balance)
                 .expect("insertion of balances should not fail");
         }
         view.system.timestamp.set(timestamp);
@@ -141,10 +162,44 @@ impl SystemExecutionState {
             .registry
             .import(registry)
             .expect("serialization of registry components should not fail");
+        for blob_id in used_blobs {
+            view.system
+                .used_blobs
+                .insert(&blob_id)
+                .expect("inserting blob IDs should not fail");
+        }
         view.system.closed.set(closed);
         view.system
             .application_permissions
             .set(application_permissions);
         view
+    }
+}
+
+impl RegisterMockApplication for SystemExecutionState {
+    fn creator_chain_id(&self) -> ChainId {
+        self.description.expect(
+            "Can't register applications on a system state with no associated `ChainDescription`",
+        ).into()
+    }
+
+    async fn registered_application_count(&self) -> anyhow::Result<usize> {
+        Ok(self.registry.known_applications.len())
+    }
+
+    async fn register_mock_application_with(
+        &mut self,
+        description: UserApplicationDescription,
+        contract: Blob,
+        service: Blob,
+    ) -> anyhow::Result<(ApplicationId, MockApplication)> {
+        let id = ApplicationId::from(&description);
+        let application = MockApplication::default();
+
+        self.registry.known_applications.insert(id, description);
+        self.extra_blobs.extend([contract, service]);
+        self.mock_applications.insert(id, application.clone());
+
+        Ok((id, application))
     }
 }

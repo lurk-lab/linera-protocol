@@ -4,12 +4,15 @@
 use async_trait::async_trait;
 use linera_base::{
     crypto::{CryptoHash, KeyPair},
-    data_types::{Blob, BlobContent, Timestamp},
+    data_types::{BlobContent, Timestamp},
     identifiers::{BlobId, ChainId},
 };
 use linera_chain::{
     data_types::BlockProposal,
-    types::{Certificate, HashedCertificateValue, LiteCertificate},
+    types::{
+        ConfirmedBlock, ConfirmedBlockCertificate, GenericCertificate, LiteCertificate, Timeout,
+        ValidatedBlock,
+    },
 };
 use linera_client::{
     chain_listener::{ChainListenerConfig, ClientContext},
@@ -51,11 +54,24 @@ impl ValidatorNode for DummyValidatorNode {
         Err(NodeError::UnexpectedMessage)
     }
 
-    async fn handle_certificate(
+    async fn handle_timeout_certificate(
         &self,
-        _: Certificate,
-        _: Vec<Blob>,
+        _: GenericCertificate<Timeout>,
+    ) -> Result<ChainInfoResponse, NodeError> {
+        Err(NodeError::UnexpectedMessage)
+    }
+
+    async fn handle_confirmed_certificate(
+        &self,
+        _: GenericCertificate<ConfirmedBlock>,
         _delivery: CrossChainMessageDelivery,
+    ) -> Result<ChainInfoResponse, NodeError> {
+        Err(NodeError::UnexpectedMessage)
+    }
+
+    async fn handle_validated_certificate(
+        &self,
+        _: GenericCertificate<ValidatedBlock>,
     ) -> Result<ChainInfoResponse, NodeError> {
         Err(NodeError::UnexpectedMessage)
     }
@@ -63,6 +79,18 @@ impl ValidatorNode for DummyValidatorNode {
     async fn handle_chain_info_query(
         &self,
         _: ChainInfoQuery,
+    ) -> Result<ChainInfoResponse, NodeError> {
+        Err(NodeError::UnexpectedMessage)
+    }
+
+    async fn download_pending_blob(&self, _: ChainId, _: BlobId) -> Result<BlobContent, NodeError> {
+        Err(NodeError::UnexpectedMessage)
+    }
+
+    async fn handle_pending_blob(
+        &self,
+        _: ChainId,
+        _: BlobContent,
     ) -> Result<ChainInfoResponse, NodeError> {
         Err(NodeError::UnexpectedMessage)
     }
@@ -79,25 +107,25 @@ impl ValidatorNode for DummyValidatorNode {
         Err(NodeError::UnexpectedMessage)
     }
 
-    async fn download_blob_content(&self, _: BlobId) -> Result<BlobContent, NodeError> {
+    async fn upload_blob(&self, _: BlobContent) -> Result<BlobId, NodeError> {
         Err(NodeError::UnexpectedMessage)
     }
 
-    async fn download_certificate_value(
+    async fn download_blob(&self, _: BlobId) -> Result<BlobContent, NodeError> {
+        Err(NodeError::UnexpectedMessage)
+    }
+
+    async fn download_certificate(
         &self,
         _: CryptoHash,
-    ) -> Result<HashedCertificateValue, NodeError> {
-        Err(NodeError::UnexpectedMessage)
-    }
-
-    async fn download_certificate(&self, _: CryptoHash) -> Result<Certificate, NodeError> {
+    ) -> Result<ConfirmedBlockCertificate, NodeError> {
         Err(NodeError::UnexpectedMessage)
     }
 
     async fn download_certificates(
         &self,
         _: Vec<CryptoHash>,
-    ) -> Result<Vec<Certificate>, NodeError> {
+    ) -> Result<Vec<ConfirmedBlockCertificate>, NodeError> {
         Err(NodeError::UnexpectedMessage)
     }
 

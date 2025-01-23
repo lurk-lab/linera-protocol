@@ -15,18 +15,19 @@ use linera_base::{
     crypto::CryptoHash,
     data_types::{Blob, BlockHeight, UserApplicationDescription},
     ensure,
+    hashed::Hashed,
     identifiers::{BlobId, ChainId, UserApplicationId},
 };
 use linera_chain::{
-    data_types::{Block, BlockProposal, ExecutedBlock, Medium, MessageBundle, Origin, Target},
-    types::{
-        ConfirmedBlock, ConfirmedBlockCertificate, Hashed, TimeoutCertificate, ValidatedBlock,
-        ValidatedBlockCertificate,
+    data_types::{
+        BlockProposal, ExecutedBlock, Medium, MessageBundle, Origin, ProposedBlock, Target,
     },
+    types::{Block, ConfirmedBlockCertificate, TimeoutCertificate, ValidatedBlockCertificate},
     ChainError, ChainStateView,
 };
 use linera_execution::{
-    committee::Epoch, Message, Query, QueryContext, Response, ServiceRuntimeEndpoint, SystemMessage,
+    committee::{Epoch, ValidatorName},
+    Message, Query, QueryContext, Response, ServiceRuntimeEndpoint, SystemMessage,
 };
 use linera_storage::{Clock as _, Storage};
 use linera_views::views::{ClonableView, ViewError};
@@ -55,8 +56,7 @@ where
     chain: ChainStateView<StorageClient::Context>,
     shared_chain_view: Option<Arc<RwLock<ChainStateView<StorageClient::Context>>>>,
     service_runtime_endpoint: Option<ServiceRuntimeEndpoint>,
-    recent_hashed_confirmed_values: Arc<ValueCache<CryptoHash, Hashed<ConfirmedBlock>>>,
-    recent_hashed_validated_values: Arc<ValueCache<CryptoHash, Hashed<ValidatedBlock>>>,
+    block_values: Arc<ValueCache<CryptoHash, Hashed<Block>>>,
     tracked_chains: Option<Arc<sync::RwLock<HashSet<ChainId>>>>,
     delivery_notifier: DeliveryNotifier,
     knows_chain_is_active: bool,
@@ -71,8 +71,7 @@ where
     pub async fn load(
         config: ChainWorkerConfig,
         storage: StorageClient,
-        confirmed_value_cache: Arc<ValueCache<CryptoHash, Hashed<ConfirmedBlock>>>,
-        validated_value_cache: Arc<ValueCache<CryptoHash, Hashed<ValidatedBlock>>>,
+        block_values: Arc<ValueCache<CryptoHash, Hashed<Block>>>,
         tracked_chains: Option<Arc<sync::RwLock<HashSet<ChainId>>>>,
         delivery_notifier: DeliveryNotifier,
         chain_id: ChainId,
@@ -86,8 +85,7 @@ where
             chain,
             shared_chain_view: None,
             service_runtime_endpoint,
-            recent_hashed_confirmed_values: confirmed_value_cache,
-            recent_hashed_validated_values: validated_value_cache,
+            block_values,
             tracked_chains,
             delivery_notifier,
             knows_chain_is_active: false,
@@ -180,7 +178,7 @@ where
     /// Executes a block without persisting any changes to the state.
     pub(super) async fn stage_block_execution(
         &mut self,
-        block: Block,
+        block: ProposedBlock,
     ) -> Result<(ExecutedBlock, ChainInfoResponse), WorkerError> {
         ChainWorkerStateWithTemporaryChanges::new(self)
             .await
@@ -230,11 +228,10 @@ where
     pub(super) async fn process_validated_block(
         &mut self,
         certificate: ValidatedBlockCertificate,
-        blobs: &[Blob],
     ) -> Result<(ChainInfoResponse, NetworkActions, bool), WorkerError> {
         ChainWorkerStateWithAttemptedChanges::new(self)
             .await
-            .process_validated_block(certificate, blobs)
+            .process_validated_block(certificate)
             .await
     }
 
@@ -242,12 +239,11 @@ where
     pub(super) async fn process_confirmed_block(
         &mut self,
         certificate: ConfirmedBlockCertificate,
-        blobs: &[Blob],
         notify_when_messages_are_delivered: Option<oneshot::Sender<()>>,
     ) -> Result<(ChainInfoResponse, NetworkActions), WorkerError> {
         ChainWorkerStateWithAttemptedChanges::new(self)
             .await
-            .process_confirmed_block(certificate, blobs, notify_when_messages_are_delivered)
+            .process_confirmed_block(certificate, notify_when_messages_are_delivered)
             .await
     }
 
@@ -300,6 +296,23 @@ where
         Ok((response, actions))
     }
 
+    /// Returns the requested blob, if it belongs to the current locked block or pending proposal.
+    pub(super) async fn download_pending_blob(&self, blob_id: BlobId) -> Result<Blob, WorkerError> {
+        let maybe_blob = self.chain.manager.pending_blob(&blob_id).await?;
+        maybe_blob.ok_or_else(|| WorkerError::BlobsNotFound(vec![blob_id]))
+    }
+
+    /// Adds the blob to pending blocks or validated block certificates that are missing it.
+    pub(super) async fn handle_pending_blob(
+        &mut self,
+        blob: Blob,
+    ) -> Result<ChainInfoResponse, WorkerError> {
+        ChainWorkerStateWithAttemptedChanges::new(&mut *self)
+            .await
+            .handle_pending_blob(blob)
+            .await
+    }
+
     /// Ensures that the current chain is active, returning an error otherwise.
     fn ensure_is_active(&mut self) -> Result<(), WorkerError> {
         if !self.knows_chain_is_active {
@@ -309,73 +322,59 @@ where
         Ok(())
     }
 
-    /// Returns an error if the block requires a blob we don't have.
-    /// Looks for the blob in: chain manager's pending blobs and storage.
-    async fn check_no_missing_blobs(
+    /// Returns the blobs required by the given executed block. The ones that are not passed in
+    /// are read from the chain manager or from storage.
+    async fn get_required_blobs(
         &self,
-        required_blob_ids: &HashSet<BlobId>,
-    ) -> Result<(), WorkerError> {
-        let pending_blobs = &self.chain.manager.get().pending_blobs;
-        let missing_blob_ids = required_blob_ids
-            .iter()
-            .filter(|blob_id| !pending_blobs.contains_key(blob_id))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let missing_blob_ids = self
-            .storage
-            .missing_blobs(missing_blob_ids.as_slice())
-            .await?;
-
-        if missing_blob_ids.is_empty() {
-            return Ok(());
-        }
-
-        Err(WorkerError::BlobsNotFound(missing_blob_ids))
-    }
-
-    /// Returns an error if unrelated blobs were provided.
-    fn check_for_unneeded_blobs(
-        &self,
-        required_blob_ids: &HashSet<BlobId>,
+        required_blob_ids: HashSet<BlobId>,
         blobs: &[Blob],
-    ) -> Result<(), WorkerError> {
-        // Find all certificates containing blobs used when executing this block.
-        for blob in blobs {
-            let blob_id = blob.id();
-            ensure!(
-                required_blob_ids.contains(&blob_id),
-                WorkerError::UnneededBlob { blob_id }
-            );
-        }
-
-        Ok(())
+    ) -> Result<BTreeMap<BlobId, Blob>, WorkerError> {
+        let maybe_blobs = self
+            .maybe_get_required_blobs(required_blob_ids, blobs)
+            .await?;
+        let not_found_blob_ids = missing_blob_ids(&maybe_blobs);
+        ensure!(
+            not_found_blob_ids.is_empty(),
+            WorkerError::BlobsNotFound(not_found_blob_ids)
+        );
+        Ok(maybe_blobs
+            .into_iter()
+            .filter_map(|(blob_id, maybe_blob)| Some((blob_id, maybe_blob?)))
+            .collect())
     }
 
-    /// Returns the blobs requested by their `blob_ids` that are in the chain manager's pending blobs
-    /// and checks that they are otherwise in storage.
-    async fn get_blobs_and_checks_storage(
+    /// Returns the blobs required by the given executed block. The ones that are not passed in
+    /// are read from the chain manager or from storage.
+    async fn maybe_get_required_blobs(
         &self,
-        blob_ids: &HashSet<BlobId>,
-    ) -> Result<Vec<Blob>, WorkerError> {
-        let pending_blobs = &self.chain.manager.get().pending_blobs;
+        required_blob_ids: HashSet<BlobId>,
+        provided_blobs: &[Blob],
+    ) -> Result<BTreeMap<BlobId, Option<Blob>>, WorkerError> {
+        let required_blob_ids = required_blob_ids.into_iter();
+        let mut maybe_blobs = BTreeMap::from_iter(required_blob_ids.map(|blob_id| (blob_id, None)));
 
-        let mut found_blobs = Vec::new();
-        let mut missing_blob_ids = Vec::new();
-        for blob_id in blob_ids {
-            if let Some(blob) = pending_blobs.get(blob_id) {
-                found_blobs.push(blob.clone());
-            } else {
-                missing_blob_ids.push(*blob_id);
+        for blob in provided_blobs {
+            if let Some(maybe_blob) = maybe_blobs.get_mut(&blob.id()) {
+                *maybe_blob = Some(blob.clone());
             }
         }
-        let not_found_blob_ids = self.storage.missing_blobs(&missing_blob_ids).await?;
-
-        if not_found_blob_ids.is_empty() {
-            Ok(found_blobs)
-        } else {
-            Err(WorkerError::BlobsNotFound(not_found_blob_ids))
+        for (blob_id, maybe_blob) in &mut maybe_blobs {
+            if maybe_blob.is_some() {
+                continue;
+            }
+            if let Some(blob) = self.chain.manager.pending_blob(blob_id).await? {
+                *maybe_blob = Some(blob);
+            } else if let Some(Some(blob)) = self.chain.pending_validated_blobs.get(blob_id).await?
+            {
+                *maybe_blob = Some(blob);
+            }
         }
+        let missing_blob_ids = missing_blob_ids(&maybe_blobs);
+        let blobs_from_storage = self.storage.read_blobs(&missing_blob_ids).await?;
+        for (blob_id, maybe_blob) in missing_blob_ids.into_iter().zip(blobs_from_storage) {
+            maybe_blobs.insert(blob_id, maybe_blob);
+        }
+        Ok(maybe_blobs)
     }
 
     /// Adds any newly created chains to the set of `tracked_chains`, if the parent chain is
@@ -505,7 +504,7 @@ where
     /// Returns true if there are no more outgoing messages in flight up to the given
     /// block height.
     pub async fn all_messages_to_tracked_chains_delivered_up_to(
-        &mut self,
+        &self,
         height: BlockHeight,
     ) -> Result<bool, WorkerError> {
         if self.chain.all_messages_delivered_up_to(height) {
@@ -541,15 +540,39 @@ where
         }
         Ok(true)
     }
+
+    /// Updates the received certificate trackers to at least the given values.
+    pub async fn update_received_certificate_trackers(
+        &mut self,
+        new_trackers: BTreeMap<ValidatorName, u64>,
+    ) -> Result<(), WorkerError> {
+        ChainWorkerStateWithAttemptedChanges::new(self)
+            .await
+            .update_received_certificate_trackers(new_trackers)
+            .await
+    }
+}
+
+/// Returns the keys whose value is `None`.
+fn missing_blob_ids(maybe_blobs: &BTreeMap<BlobId, Option<Blob>>) -> Vec<BlobId> {
+    maybe_blobs
+        .iter()
+        .filter(|(_, maybe_blob)| maybe_blob.is_none())
+        .map(|(chain_id, _)| *chain_id)
+        .collect()
 }
 
 /// Returns an error if the block is not at the expected epoch.
-fn check_block_epoch(chain_epoch: Epoch, block: &Block) -> Result<(), WorkerError> {
+fn check_block_epoch(
+    chain_epoch: Epoch,
+    block_chain: ChainId,
+    block_epoch: Epoch,
+) -> Result<(), WorkerError> {
     ensure!(
-        block.epoch == chain_epoch,
+        block_epoch == chain_epoch,
         WorkerError::InvalidEpoch {
-            chain_id: block.chain_id,
-            epoch: block.epoch,
+            chain_id: block_chain,
+            epoch: block_epoch,
             chain_epoch
         }
     );

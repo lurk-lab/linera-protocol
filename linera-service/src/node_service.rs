@@ -12,40 +12,36 @@ use async_graphql::{
 };
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse, GraphQLSubscription};
 use axum::{extract::Path, http::StatusCode, response, response::IntoResponse, Extension, Router};
-use futures::{
-    future::{self},
-    lock::Mutex,
-    Future,
-};
+use futures::{lock::Mutex, Future};
 use linera_base::{
-    crypto::{CryptoError, CryptoHash, PublicKey},
-    data_types::{
-        Amount, ApplicationPermissions, BlobBytes, Bytecode, TimeDelta, Timestamp,
-        UserApplicationDescription,
-    },
+    crypto::{CryptoError, CryptoHash},
+    data_types::{Amount, ApplicationPermissions, Bytecode, TimeDelta, UserApplicationDescription},
+    hashed::Hashed,
     identifiers::{ApplicationId, BytecodeId, ChainId, Owner, UserApplicationId},
     ownership::{ChainOwnership, TimeoutConfig},
     BcsHexParseError,
 };
-use linera_chain::{types::HashedCertificateValue, ChainStateView};
+use linera_chain::{
+    types::{ConfirmedBlock, GenericCertificate},
+    ChainStateView,
+};
 use linera_client::chain_listener::{ChainListener, ChainListenerConfig, ClientContext};
 use linera_core::{
     client::{ChainClient, ChainClientError},
-    data_types::{ClientOutcome, RoundTimeout},
-    node::NotificationStream,
-    worker::{Notification, Reason},
+    data_types::ClientOutcome,
+    worker::Notification,
 };
 use linera_execution::{
     committee::{Committee, Epoch},
     system::{AdminOperation, Recipient, SystemChannel},
     Operation, Query, Response, SystemOperation,
 };
+use linera_sdk::base::BlobContent;
 use linera_storage::Storage;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error as ThisError;
 use tokio::sync::OwnedRwLockReadGuard;
-use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 use tracing::{debug, error, info, instrument};
 
@@ -218,7 +214,7 @@ where
                 ClientOutcome::WaitForTimeout(timeout) => timeout,
             };
             drop(client);
-            wait_for_next_round(&mut stream, timeout).await;
+            util::wait_for_next_round(&mut stream, timeout).await;
         }
     }
 }
@@ -243,7 +239,7 @@ where
                 Some(timestamp) => {
                     let mut stream = client.subscribe().await?;
                     drop(client);
-                    wait_for_next_round(&mut stream, timestamp).await;
+                    util::wait_for_next_round(&mut stream, timestamp).await;
                 }
             }
         }
@@ -325,15 +321,15 @@ where
         .await
     }
 
-    /// Creates (or activates) a new chain by installing the given authentication key.
+    /// Creates (or activates) a new chain with the given owner.
     /// This will automatically subscribe to the future committees created by `admin_id`.
     async fn open_chain(
         &self,
         chain_id: ChainId,
-        public_key: PublicKey,
+        owner: Owner,
         balance: Option<Amount>,
     ) -> Result<ChainId, Error> {
-        let ownership = ChainOwnership::single(public_key);
+        let ownership = ChainOwnership::single(owner);
         let balance = balance.unwrap_or(Amount::ZERO);
         let message_id = self
             .apply_client_command(&chain_id, move |client| {
@@ -358,7 +354,7 @@ where
         &self,
         chain_id: ChainId,
         application_permissions: Option<ApplicationPermissions>,
-        public_keys: Vec<PublicKey>,
+        owners: Vec<Owner>,
         weights: Option<Vec<u64>>,
         multi_leader_rounds: Option<u32>,
         balance: Option<Amount>,
@@ -383,16 +379,16 @@ where
         fallback_duration_ms: u64,
     ) -> Result<ChainId, Error> {
         let owners = if let Some(weights) = weights {
-            if weights.len() != public_keys.len() {
+            if weights.len() != owners.len() {
                 return Err(Error::new(format!(
-                    "There are {} public keys but {} weights.",
-                    public_keys.len(),
+                    "There are {} owners but {} weights.",
+                    owners.len(),
                     weights.len()
                 )));
             }
-            public_keys.into_iter().zip(weights).collect::<Vec<_>>()
+            owners.into_iter().zip(weights).collect::<Vec<_>>()
         } else {
-            public_keys
+            owners
                 .into_iter()
                 .zip(iter::repeat(100))
                 .collect::<Vec<_>>()
@@ -423,25 +419,21 @@ where
         Ok(ChainId::child(message_id))
     }
 
-    /// Closes the chain.
-    async fn close_chain(&self, chain_id: ChainId) -> Result<CryptoHash, Error> {
-        let certificate = self
+    /// Closes the chain. Returns `None` if it was already closed.
+    async fn close_chain(&self, chain_id: ChainId) -> Result<Option<CryptoHash>, Error> {
+        let maybe_cert = self
             .apply_client_command(&chain_id, |client| async move {
                 let result = client.close_chain().await.map_err(Error::from);
                 (result, client)
             })
             .await?;
-        Ok(certificate.hash())
+        Ok(maybe_cert.as_ref().map(GenericCertificate::hash))
     }
 
     /// Changes the authentication key of the chain.
-    async fn change_owner(
-        &self,
-        chain_id: ChainId,
-        new_public_key: PublicKey,
-    ) -> Result<CryptoHash, Error> {
+    async fn change_owner(&self, chain_id: ChainId, new_owner: Owner) -> Result<CryptoHash, Error> {
         let operation = SystemOperation::ChangeOwnership {
-            super_owners: vec![new_public_key],
+            super_owners: vec![new_owner],
             owners: Vec::new(),
             multi_leader_rounds: 2,
             timeout_config: TimeoutConfig::default(),
@@ -454,7 +446,7 @@ where
     async fn change_multiple_owners(
         &self,
         chain_id: ChainId,
-        new_public_keys: Vec<PublicKey>,
+        new_owners: Vec<Owner>,
         new_weights: Vec<u64>,
         multi_leader_rounds: u32,
         #[graphql(desc = "The duration of the fast round, in milliseconds; default: no timeout")]
@@ -479,7 +471,7 @@ where
     ) -> Result<CryptoHash, Error> {
         let operation = SystemOperation::ChangeOwnership {
             super_owners: Vec::new(),
-            owners: new_public_keys.into_iter().zip(new_weights).collect(),
+            owners: new_owners.into_iter().zip(new_weights).collect(),
             multi_leader_rounds,
             timeout_config: TimeoutConfig {
                 fast_round_duration: fast_round_ms.map(TimeDelta::from_millis),
@@ -587,19 +579,15 @@ where
         chain_id: ChainId,
         bytes: Vec<u8>,
     ) -> Result<CryptoHash, Error> {
-        let hash = CryptoHash::new(&BlobBytes(bytes.clone()));
-        self.apply_client_command(&chain_id, move |client| {
+        self.apply_client_command(&chain_id, |client| {
             let bytes = bytes.clone();
             async move {
-                let result = client
-                    .publish_data_blob(bytes)
-                    .await
-                    .map_err(Error::from)
-                    .map(|outcome| outcome.map(|_| hash));
+                let result = client.publish_data_blob(bytes).await.map_err(Error::from);
                 (result, client)
             }
         })
         .await
+        .map(|_| CryptoHash::new(&BlobContent::new_data(bytes)))
     }
 
     /// Creates a new application.
@@ -652,7 +640,7 @@ where
             };
             let mut stream = client.subscribe().await?;
             drop(client);
-            wait_for_next_round(&mut stream, timeout).await;
+            util::wait_for_next_round(&mut stream, timeout).await;
         }
     }
 }
@@ -699,7 +687,7 @@ where
         &self,
         hash: Option<CryptoHash>,
         chain_id: ChainId,
-    ) -> Result<Option<HashedCertificateValue>, Error> {
+    ) -> Result<Option<Hashed<ConfirmedBlock>>, Error> {
         let client = self.context.lock().await.make_chain_client(chain_id)?;
         let hash = match hash {
             Some(hash) => Some(hash),
@@ -709,7 +697,7 @@ where
             }
         };
         if let Some(hash) = hash {
-            let block = client.read_hashed_certificate_value(hash).await?;
+            let block = client.read_hashed_confirmed_block(hash).await?;
             Ok(Some(block))
         } else {
             Ok(None)
@@ -721,7 +709,7 @@ where
         from: Option<CryptoHash>,
         chain_id: ChainId,
         limit: Option<u32>,
-    ) -> Result<Vec<HashedCertificateValue>, Error> {
+    ) -> Result<Vec<Hashed<ConfirmedBlock>>, Error> {
         let client = self.context.lock().await.make_chain_client(chain_id)?;
         let limit = limit.unwrap_or(10);
         let from = match from {
@@ -733,7 +721,7 @@ where
         };
         if let Some(from) = from {
             let values = client
-                .read_hashed_certificate_values_downward(from, limit)
+                .read_hashed_confirmed_blocks_downward(from, limit)
                 .await?;
             Ok(values)
         } else {
@@ -1070,7 +1058,7 @@ where
             let mut stream = client.subscribe().await.map_err(|_| {
                 ChainClientError::InternalError("Could not subscribe to the local node.")
             })?;
-            wait_for_next_round(&mut stream, timeout).await;
+            util::wait_for_next_round(&mut stream, timeout).await;
         };
         Ok(async_graphql::Response::new(hash.to_value()))
     }
@@ -1119,20 +1107,4 @@ where
 
         Ok(response.into())
     }
-}
-
-/// Returns after the specified time or if we receive a notification that a new round has started.
-pub async fn wait_for_next_round(stream: &mut NotificationStream, timeout: RoundTimeout) {
-    let mut stream = stream.filter(|notification| match &notification.reason {
-        Reason::NewBlock { height, .. } => *height >= timeout.next_block_height,
-        Reason::NewRound { round, .. } => *round > timeout.current_round,
-        Reason::NewIncomingBundle { .. } => false,
-    });
-    future::select(
-        Box::pin(stream.next()),
-        Box::pin(linera_base::time::timer::sleep(
-            timeout.timestamp.duration_since(Timestamp::now()),
-        )),
-    )
-    .await;
 }

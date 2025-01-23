@@ -2,7 +2,10 @@
 // Copyright (c) Zefchain Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::HashSet, fmt};
+use std::{
+    collections::{BTreeSet, HashSet},
+    fmt,
+};
 
 use async_graphql::SimpleObject;
 use custom_debug_derive::Debug;
@@ -10,7 +13,9 @@ use linera_base::{
     bcs,
     crypto::{BcsHashable, BcsSignable, CryptoError, CryptoHash, KeyPair, PublicKey, Signature},
     data_types::{Amount, Blob, BlockHeight, OracleResponse, Round, Timestamp},
-    doc_scalar, ensure, hex_debug,
+    doc_scalar, ensure,
+    hashed::Hashed,
+    hex_debug,
     identifiers::{
         Account, BlobId, BlobType, ChainId, ChannelName, Destination, GenericApplicationId,
         MessageId, Owner, StreamId,
@@ -21,12 +26,11 @@ use linera_execution::{
     system::OpenChainConfig,
     Message, MessageKind, Operation, SystemMessage, SystemOperation,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    block::Timeout,
     types::{
-        CertificateValue, GenericCertificate, Has, Hashed, LiteCertificate,
+        CertificateKind, CertificateValue, GenericCertificate, LiteCertificate,
         ValidatedBlockCertificate,
     },
     ChainError,
@@ -44,7 +48,7 @@ mod data_types_tests;
 ///   received ahead of time in the inbox of the chain.
 /// * This constraint does not apply to the execution of confirmed blocks.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, SimpleObject)]
-pub struct Block {
+pub struct ProposedBlock {
     /// The chain to which this block belongs.
     pub chain_id: ChainId,
     /// The number identifying the current configuration.
@@ -72,10 +76,10 @@ pub struct Block {
     pub previous_block_hash: Option<CryptoHash>,
 }
 
-impl Block {
+impl ProposedBlock {
     /// Returns all the published blob IDs in this block's operations.
-    pub fn published_blob_ids(&self) -> HashSet<BlobId> {
-        let mut blob_ids = HashSet::new();
+    pub fn published_blob_ids(&self) -> BTreeSet<BlobId> {
+        let mut blob_ids = BTreeSet::new();
         for operation in &self.operations {
             if let Operation::System(SystemOperation::PublishDataBlob { blob_hash }) = operation {
                 blob_ids.insert(BlobId::new(*blob_hash, BlobType::Data));
@@ -138,6 +142,19 @@ impl Block {
         let posted_message = in_bundle.bundle.messages.first()?;
         let config = posted_message.message.matches_open_chain()?;
         Some((in_bundle, posted_message, config))
+    }
+
+    pub fn check_proposal_size(
+        &self,
+        maximum_block_proposal_size: u64,
+        blobs: &[Blob],
+    ) -> Result<(), ChainError> {
+        let size = bcs::serialized_size(&(self, blobs))?;
+        ensure!(
+            size <= usize::try_from(maximum_block_proposal_size).unwrap_or(usize::MAX),
+            ChainError::BlockProposalTooLarge
+        );
+        Ok(())
     }
 }
 
@@ -212,6 +229,8 @@ impl IncomingBundle {
         true
     }
 }
+
+impl<'de> BcsHashable<'de> for IncomingBundle {}
 
 /// What to do with a message picked from the inbox.
 #[derive(Copy, Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
@@ -291,6 +310,7 @@ pub enum Medium {
 pub struct BlockProposal {
     pub content: ProposalContent,
     pub owner: Owner,
+    pub public_key: PublicKey,
     pub signature: Signature,
     #[debug(skip_if = Vec::is_empty)]
     pub blobs: Vec<Blob>,
@@ -317,6 +337,8 @@ pub struct OutgoingMessage {
     /// The message itself.
     pub message: Message,
 }
+
+impl<'de> BcsHashable<'de> for OutgoingMessage {}
 
 /// A message together with kind, authentication and grant information.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, SimpleObject)]
@@ -378,14 +400,14 @@ impl OutgoingMessage {
     }
 }
 
-/// A [`Block`], together with the outcome from its execution.
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, SimpleObject)]
+/// A [`ProposedBlock`], together with the outcome from its execution.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, SimpleObject)]
 pub struct ExecutedBlock {
-    pub block: Block,
+    pub block: ProposedBlock,
     pub outcome: BlockExecutionOutcome,
 }
 
-/// The messages and the state hash resulting from a [`Block`]'s execution.
+/// The messages and the state hash resulting from a [`ProposedBlock`]'s execution.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, SimpleObject)]
 #[cfg_attr(with_testing, derive(Default))]
 pub struct BlockExecutionOutcome {
@@ -414,19 +436,32 @@ pub struct EventRecord {
     pub value: Vec<u8>,
 }
 
+impl<'de> BcsHashable<'de> for EventRecord {}
+
 /// The hash and chain ID of a `CertificateValue`.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
 pub struct LiteValue {
     pub value_hash: CryptoHash,
     pub chain_id: ChainId,
+    pub kind: CertificateKind,
+}
+
+impl LiteValue {
+    pub fn new<T: CertificateValue>(value: &Hashed<T>) -> Self {
+        LiteValue {
+            value_hash: value.hash(),
+            chain_id: value.inner().chain_id(),
+            kind: T::KIND,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
-struct ValueHashAndRound(CryptoHash, Round);
+struct VoteValue(CryptoHash, Round, CertificateKind);
 
 /// A vote on a statement from a validator.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound(deserialize = "T: DeserializeOwned + BcsHashable"))]
+#[serde(bound(deserialize = "T: BcsHashable<'de>"))]
 pub struct Vote<T> {
     pub value: Hashed<T>,
     pub round: Round,
@@ -434,20 +469,13 @@ pub struct Vote<T> {
     pub signature: Signature,
 }
 
-impl Has<ChainId> for CertificateValue {
-    fn get(&self) -> &ChainId {
-        match self {
-            CertificateValue::ConfirmedBlock(confirmed) => &confirmed.inner().block.chain_id,
-            CertificateValue::ValidatedBlock(validated) => &validated.inner().block.chain_id,
-            CertificateValue::Timeout(Timeout { chain_id, .. }) => chain_id,
-        }
-    }
-}
-
 impl<T> Vote<T> {
     /// Use signing key to create a signed object.
-    pub fn new(value: Hashed<T>, round: Round, key_pair: &KeyPair) -> Self {
-        let hash_and_round = ValueHashAndRound(value.hash(), round);
+    pub fn new(value: Hashed<T>, round: Round, key_pair: &KeyPair) -> Self
+    where
+        T: CertificateValue,
+    {
+        let hash_and_round = VoteValue(value.hash(), round, T::KIND);
         let signature = Signature::new(&hash_and_round, key_pair);
         Self {
             value,
@@ -460,10 +488,10 @@ impl<T> Vote<T> {
     /// Returns the vote, with a `LiteValue` instead of the full value.
     pub fn lite(&self) -> LiteVote
     where
-        T: Has<ChainId>,
+        T: CertificateValue,
     {
         LiteVote {
-            value: self.value.lite(),
+            value: LiteValue::new(&self.value),
             round: self.round,
             validator: self.validator,
             signature: self.signature,
@@ -471,8 +499,8 @@ impl<T> Vote<T> {
     }
 
     /// Returns the value this vote is for.
-    pub fn value(&self) -> &T {
-        self.value.inner()
+    pub fn value(&self) -> &Hashed<T> {
+        &self.value
     }
 }
 
@@ -488,7 +516,7 @@ pub struct LiteVote {
 
 impl LiteVote {
     /// Returns the full vote, with the value, if it matches.
-    #[cfg(with_testing)]
+    #[cfg(any(feature = "benchmark", with_testing))]
     pub fn with_value<T>(self, value: Hashed<T>) -> Option<Vote<T>> {
         if self.value.value_hash != value.hash() {
             return None;
@@ -499,6 +527,10 @@ impl LiteVote {
             validator: self.validator,
             signature: self.signature,
         })
+    }
+
+    pub fn kind(&self) -> CertificateKind {
+        self.value.kind
     }
 }
 
@@ -693,23 +725,26 @@ impl ExecutedBlock {
     }
 
     pub fn required_blob_ids(&self) -> HashSet<BlobId> {
-        self.outcome.required_blob_ids()
+        let mut blob_ids = self.outcome.oracle_blob_ids();
+        blob_ids.extend(self.block.published_blob_ids());
+        blob_ids
     }
 
     pub fn requires_blob(&self, blob_id: &BlobId) -> bool {
-        self.required_blob_ids().contains(blob_id)
+        self.outcome.oracle_blob_ids().contains(blob_id)
+            || self.block.published_blob_ids().contains(blob_id)
     }
 }
 
 impl BlockExecutionOutcome {
-    pub fn with(self, block: Block) -> ExecutedBlock {
+    pub fn with(self, block: ProposedBlock) -> ExecutedBlock {
         ExecutedBlock {
             block,
             outcome: self,
         }
     }
 
-    pub fn required_blob_ids(&self) -> HashSet<BlobId> {
+    fn oracle_blob_ids(&self) -> HashSet<BlobId> {
         let mut required_blob_ids = HashSet::new();
         for responses in &self.oracle_responses {
             for response in responses {
@@ -721,31 +756,42 @@ impl BlockExecutionOutcome {
 
         required_blob_ids
     }
+
+    pub fn has_oracle_responses(&self) -> bool {
+        self.oracle_responses
+            .iter()
+            .any(|responses| !responses.is_empty())
+    }
 }
 
 /// The data a block proposer signs.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProposalContent {
     /// The proposed block.
-    pub block: Block,
+    pub block: ProposedBlock,
     /// The consensus round in which this proposal is made.
     pub round: Round,
-    /// If this is a retry from an earlier round, the oracle responses from when the block was
-    /// first validated. These are reused so the execution outcome remains the same.
+    /// If this is a retry from an earlier round, the execution outcome.
     #[debug(skip_if = Option::is_none)]
-    pub forced_oracle_responses: Option<Vec<Vec<OracleResponse>>>,
+    pub outcome: Option<BlockExecutionOutcome>,
 }
 
 impl BlockProposal {
-    pub fn new_initial(round: Round, block: Block, secret: &KeyPair, blobs: Vec<Blob>) -> Self {
+    pub fn new_initial(
+        round: Round,
+        block: ProposedBlock,
+        secret: &KeyPair,
+        blobs: Vec<Blob>,
+    ) -> Self {
         let content = ProposalContent {
             round,
             block,
-            forced_oracle_responses: None,
+            outcome: None,
         };
         let signature = Signature::new(&content, secret);
         Self {
             content,
+            public_key: secret.public(),
             owner: secret.public().into(),
             signature,
             blobs,
@@ -760,29 +806,22 @@ impl BlockProposal {
         blobs: Vec<Blob>,
     ) -> Self {
         let lite_cert = validated_block_certificate.lite_certificate().cloned();
-        let executed_block = validated_block_certificate.into_inner().into_inner();
+        let block = validated_block_certificate.into_inner().into_inner();
+        let executed_block: ExecutedBlock = block.into();
         let content = ProposalContent {
             block: executed_block.block,
             round,
-            forced_oracle_responses: Some(executed_block.outcome.oracle_responses),
+            outcome: Some(executed_block.outcome),
         };
         let signature = Signature::new(&content, secret);
         Self {
             content,
+            public_key: secret.public(),
             owner: secret.public().into(),
             signature,
             blobs,
             validated_block_certificate: Some(lite_cert),
         }
-    }
-
-    pub fn check_size(&self, maximum_block_proposal_size: u64) -> Result<(), ChainError> {
-        let size = bcs::serialized_size(&self)?;
-        ensure!(
-            size <= usize::try_from(maximum_block_proposal_size).unwrap_or(usize::MAX),
-            ChainError::BlockProposalTooLarge
-        );
-        Ok(())
     }
 
     pub fn check_signature(&self, public_key: PublicKey) -> Result<(), CryptoError> {
@@ -793,7 +832,7 @@ impl BlockProposal {
 impl LiteVote {
     /// Uses the signing key to create a signed object.
     pub fn new(value: LiteValue, round: Round, key_pair: &KeyPair) -> Self {
-        let hash_and_round = ValueHashAndRound(value.value_hash, round);
+        let hash_and_round = VoteValue(value.value_hash, round, value.kind);
         let signature = Signature::new(&hash_and_round, key_pair);
         Self {
             value,
@@ -805,7 +844,7 @@ impl LiteVote {
 
     /// Verifies the signature in the vote.
     pub fn check(&self) -> Result<(), ChainError> {
-        let hash_and_round = ValueHashAndRound(self.value.value_hash, self.round);
+        let hash_and_round = VoteValue(self.value.value_hash, self.round, self.value.kind);
         Ok(self.signature.check(&hash_and_round, self.validator.0)?)
     }
 }
@@ -837,9 +876,9 @@ impl<'a, T> SignatureAggregator<'a, T> {
         signature: Signature,
     ) -> Result<Option<GenericCertificate<T>>, ChainError>
     where
-        T: Clone,
+        T: CertificateValue,
     {
-        let hash_and_round = ValueHashAndRound(self.partial.hash(), self.partial.round);
+        let hash_and_round = VoteValue(self.partial.hash(), self.partial.round, T::KIND);
         signature.check(&hash_and_round, validator.0)?;
         // Check that each validator only appears once.
         ensure!(
@@ -872,6 +911,7 @@ pub(crate) fn is_strictly_ordered(values: &[(ValidatorName, Signature)]) -> bool
 /// Verifies certificate signatures.
 pub(crate) fn check_signatures(
     value_hash: CryptoHash,
+    certificate_kind: CertificateKind,
     round: Round,
     signatures: &[(ValidatorName, Signature)],
     committee: &Committee,
@@ -896,14 +936,14 @@ pub(crate) fn check_signatures(
         ChainError::CertificateRequiresQuorum
     );
     // All that is left is checking signatures!
-    let hash_and_round = ValueHashAndRound(value_hash, round);
+    let hash_and_round = VoteValue(value_hash, round, certificate_kind);
     Signature::verify_batch(&hash_and_round, signatures.iter().map(|(v, s)| (&v.0, s)))?;
     Ok(())
 }
 
-impl BcsSignable for ProposalContent {}
+impl<'de> BcsSignable<'de> for ProposalContent {}
 
-impl BcsSignable for ValueHashAndRound {}
+impl<'de> BcsSignable<'de> for VoteValue {}
 
 doc_scalar!(
     MessageAction,

@@ -8,7 +8,7 @@ use custom_debug_derive::Debug;
 use linera_base::{
     crypto::{BcsSignable, CryptoError, CryptoHash, KeyPair, Signature},
     data_types::{Amount, BlockHeight, Round, Timestamp},
-    identifiers::{ChainDescription, ChainId, Owner},
+    identifiers::{AccountOwner, ChainDescription, ChainId},
 };
 use linera_chain::{
     data_types::{ChainAndHeight, IncomingBundle, Medium, MessageBundle},
@@ -67,9 +67,9 @@ pub struct ChainInfoQuery {
     /// Optionally test that the block height is the one expected.
     #[debug(skip_if = Option::is_none)]
     pub test_next_block_height: Option<BlockHeight>,
-    /// Request the balance of a given `Owner`.
+    /// Request the balance of a given [`AccountOwner`].
     #[debug(skip_if = Option::is_none)]
-    pub request_owner_balance: Option<Owner>,
+    pub request_owner_balance: Option<AccountOwner>,
     /// Query the current committees.
     #[debug(skip_if = Not::not)]
     pub request_committees: bool,
@@ -119,7 +119,7 @@ impl ChainInfoQuery {
         self
     }
 
-    pub fn with_owner_balance(mut self, owner: Owner) -> Self {
+    pub fn with_owner_balance(mut self, owner: AccountOwner) -> Self {
         self.request_owner_balance = Some(owner);
         self
     }
@@ -199,6 +199,19 @@ pub struct ChainInfo {
     pub requested_received_log: Vec<ChainAndHeight>,
 }
 
+impl ChainInfo {
+    /// Returns the `RoundTimeout` value for the current round, or `None` if the current round
+    /// does not time out.
+    pub fn round_timeout(&self) -> Option<RoundTimeout> {
+        // TODO(#1424): The local timeout might not match the validators' exactly.
+        Some(RoundTimeout {
+            timestamp: self.manager.round_timeout?,
+            current_round: self.manager.current_round,
+            next_block_height: self.next_block_height,
+        })
+    }
+}
+
 /// The response to an `ChainInfoQuery`
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(with_testing, derive(Eq, PartialEq))]
@@ -262,7 +275,7 @@ where
             chain_id: view.chain_id(),
             epoch: *system_state.epoch.get(),
             description: *system_state.description.get(),
-            manager: Box::new(ChainManagerInfo::from(view.manager.get())),
+            manager: Box::new(ChainManagerInfo::from(&view.manager)),
             chain_balance: *system_state.balance.get(),
             block_hash: tip_state.block_hash,
             next_block_height: tip_state.next_block_height,
@@ -302,7 +315,7 @@ impl ChainInfoResponse {
     }
 }
 
-impl BcsSignable for ChainInfo {}
+impl<'de> BcsSignable<'de> for ChainInfo {}
 
 /// The outcome of trying to commit a list of operations to the chain.
 #[derive(Debug)]

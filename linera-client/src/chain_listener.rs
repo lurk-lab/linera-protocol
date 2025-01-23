@@ -201,7 +201,7 @@ impl ChainListener {
             match &notification.reason {
                 Reason::NewIncomingBundle { .. } => timeout = storage.clock().current_time(),
                 Reason::NewBlock { .. } | Reason::NewRound { .. } => {
-                    if let Err(error) = client.update_validators().await {
+                    if let Err(error) = client.update_validators(None).await {
                         warn!(
                             "Failed to update validators about the local chain after \
                             receiving notification {:?} with error: {:?}",
@@ -217,12 +217,9 @@ impl ChainListener {
             {
                 context.lock().await.update_wallet(&client).await?;
             }
-            let value = storage.read_hashed_certificate_value(hash).await?;
-            let Some(executed_block) = value.inner().executed_block() else {
-                error!("NewBlock notification about value without a block: {hash}");
-                continue;
-            };
-            let new_chains = executed_block
+            let value = storage.read_hashed_confirmed_block(hash).await?;
+            let block = value.inner().block();
+            let new_chains = block
                 .messages()
                 .iter()
                 .flatten()
@@ -233,13 +230,13 @@ impl ChainListener {
                         ..
                     } = outgoing_message
                     {
-                        let keys = open_chain_config
+                        let owners = open_chain_config
                             .ownership
-                            .all_public_keys()
+                            .all_owners()
                             .cloned()
                             .collect::<Vec<_>>();
-                        let timestamp = executed_block.block.timestamp;
-                        Some((*new_id, keys, timestamp))
+                        let timestamp = block.header.timestamp;
+                        Some((new_id, owners, timestamp))
                     } else {
                         None
                     }
@@ -252,13 +249,13 @@ impl ChainListener {
             for (new_id, owners, timestamp) in new_chains {
                 let key_pair = owners
                     .iter()
-                    .find_map(|public_key| context_guard.wallet().key_pair_for_pk(public_key));
+                    .find_map(|owner| context_guard.wallet().key_pair_for_owner(owner));
                 if key_pair.is_some() {
                     context_guard
-                        .update_wallet_for_new_chain(new_id, key_pair, timestamp)
+                        .update_wallet_for_new_chain(*new_id, key_pair, timestamp)
                         .await?;
                     Self::run_with_chain_id(
-                        new_id,
+                        *new_id,
                         context.clone(),
                         storage.clone(),
                         config.clone(),

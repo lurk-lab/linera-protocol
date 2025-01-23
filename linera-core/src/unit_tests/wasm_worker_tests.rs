@@ -10,11 +10,15 @@
 #![allow(clippy::large_futures)]
 #![cfg(any(feature = "wasmer", feature = "wasmtime"))]
 
+use std::collections::BTreeSet;
+
+use assert_matches::assert_matches;
 use linera_base::{
     crypto::KeyPair,
     data_types::{
         Amount, Blob, BlockHeight, Bytecode, OracleResponse, Timestamp, UserApplicationDescription,
     },
+    hashed::Hashed,
     identifiers::{
         BytecodeId, ChainDescription, ChainId, Destination, MessageId, UserApplicationId,
     },
@@ -23,7 +27,7 @@ use linera_base::{
 use linera_chain::{
     data_types::{BlockExecutionOutcome, OutgoingMessage},
     test::{make_child_block, make_first_block, BlockTestExt},
-    types::HashedCertificateValue,
+    types::ConfirmedBlock,
 };
 use linera_execution::{
     committee::Epoch,
@@ -43,6 +47,7 @@ use linera_views::{memory::MemoryStore, views::CryptoHashView};
 use test_case::test_case;
 
 use super::{init_worker_with_chains, make_certificate};
+use crate::worker::WorkerError;
 
 #[cfg_attr(feature = "wasmer", test_case(WasmRuntime::Wasmer ; "wasmer"))]
 #[cfg_attr(feature = "wasmtime", test_case(WasmRuntime::Wasmtime ; "wasmtime"))]
@@ -95,15 +100,15 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     let admin_id = ChainDescription::Root(0);
-    let publisher_key_pair = KeyPair::generate();
+    let publisher_owner = KeyPair::generate().public().into();
     let publisher_chain = ChainDescription::Root(1);
-    let creator_key_pair = KeyPair::generate();
+    let creator_owner = KeyPair::generate().public().into();
     let creator_chain = ChainDescription::Root(2);
     let (committee, worker) = init_worker_with_chains(
-        storage,
+        storage.clone(),
         vec![
-            (publisher_chain, publisher_key_pair.public(), Amount::ZERO),
-            (creator_chain, creator_key_pair.public(), Amount::ZERO),
+            (publisher_chain, publisher_owner, Amount::ZERO),
+            (creator_chain, creator_owner, Amount::ZERO),
         ],
     )
     .await;
@@ -133,30 +138,34 @@ where
         .with_operation(publish_operation);
     let publisher_system_state = SystemExecutionState {
         committees: [(Epoch::ZERO, committee.clone())].into_iter().collect(),
-        ownership: ChainOwnership::single(publisher_key_pair.public()),
+        ownership: ChainOwnership::single(publisher_owner),
         timestamp: Timestamp::from(1),
+        used_blobs: BTreeSet::from([contract_blob_id, service_blob_id]),
         ..SystemExecutionState::new(Epoch::ZERO, publisher_chain, admin_id)
     };
     let publisher_state_hash = publisher_system_state.clone().into_hash().await;
-    let publish_block_proposal = HashedCertificateValue::new_confirmed(
+    let publish_block_proposal = Hashed::new(ConfirmedBlock::new(
         BlockExecutionOutcome {
             messages: vec![Vec::new()],
             events: vec![Vec::new()],
             state_hash: publisher_state_hash,
-            oracle_responses: vec![vec![
-                OracleResponse::Blob(contract_blob_id),
-                OracleResponse::Blob(service_blob_id),
-            ]],
+            oracle_responses: vec![vec![]],
         }
         .with(publish_block),
-    );
+    ));
     let publish_certificate = make_certificate(&committee, &worker, publish_block_proposal);
 
+    assert_matches!(
+        worker
+            .fully_handle_certificate_with_notifications(publish_certificate.clone(), &())
+            .await,
+        Err(WorkerError::BlobsNotFound(_))
+    );
+    storage
+        .write_blobs(&[contract_blob.clone(), service_blob.clone()])
+        .await?;
     let info = worker
-        .fully_handle_certificate(
-            publish_certificate.clone(),
-            vec![contract_blob.clone(), service_blob.clone()],
-        )
+        .fully_handle_certificate_with_notifications(publish_certificate.clone(), &())
         .await
         .unwrap()
         .info;
@@ -169,7 +178,7 @@ where
 
     let mut creator_system_state = SystemExecutionState {
         committees: [(Epoch::ZERO, committee.clone())].into_iter().collect(),
-        ownership: ChainOwnership::single(creator_key_pair.public()),
+        ownership: ChainOwnership::single(creator_owner),
         timestamp: Timestamp::from(1),
         ..SystemExecutionState::new(Epoch::ZERO, creator_chain, admin_id)
     };
@@ -217,7 +226,7 @@ where
             service_blob,
         )
         .await?;
-    let create_block_proposal = HashedCertificateValue::new_confirmed(
+    let create_block_proposal = Hashed::new(ConfirmedBlock::new(
         BlockExecutionOutcome {
             messages: vec![vec![OutgoingMessage {
                 destination: Destination::Recipient(creator_chain.into()),
@@ -235,11 +244,11 @@ where
             ]],
         }
         .with(create_block),
-    );
+    ));
     let create_certificate = make_certificate(&committee, &worker, create_block_proposal);
 
     let info = worker
-        .fully_handle_certificate(create_certificate.clone(), vec![])
+        .fully_handle_certificate_with_notifications(create_certificate.clone(), &())
         .await
         .unwrap()
         .info;
@@ -253,7 +262,7 @@ where
     // Execute an application operation
     let increment = 5_u64;
     let user_operation = bcs::to_bytes(&increment)?;
-    let run_block = make_child_block(&create_certificate.into_value().try_into().unwrap())
+    let run_block = make_child_block(&create_certificate.into_value())
         .with_timestamp(3)
         .with_operation(Operation::User {
             application_id,
@@ -280,7 +289,7 @@ where
         )
         .await?;
     creator_state.system.timestamp.set(Timestamp::from(3));
-    let run_block_proposal = HashedCertificateValue::new_confirmed(
+    let run_block_proposal = Hashed::new(ConfirmedBlock::new(
         BlockExecutionOutcome {
             messages: vec![Vec::new()],
             events: vec![Vec::new()],
@@ -288,11 +297,11 @@ where
             oracle_responses: vec![Vec::new()],
         }
         .with(run_block),
-    );
+    ));
     let run_certificate = make_certificate(&committee, &worker, run_block_proposal);
 
     let info = worker
-        .fully_handle_certificate(run_certificate.clone(), vec![])
+        .fully_handle_certificate_with_notifications(run_certificate.clone(), &())
         .await
         .unwrap()
         .info;

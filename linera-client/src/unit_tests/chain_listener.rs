@@ -10,13 +10,14 @@ use futures::{lock::Mutex, FutureExt as _};
 use linera_base::{
     crypto::{KeyPair, PublicKey},
     data_types::{Amount, BlockHeight, TimeDelta, Timestamp},
-    identifiers::{ChainDescription, ChainId},
+    identifiers::ChainId,
     ownership::{ChainOwnership, TimeoutConfig},
 };
 use linera_core::{
     client::{ChainClient, Client},
     node::CrossChainMessageDelivery,
     test_utils::{MemoryStorageBuilder, NodeProvider, StorageBuilder as _, TestBuilder},
+    DEFAULT_GRACE_PERIOD,
 };
 use linera_execution::system::Recipient;
 use linera_storage::{DbStorage, TestClock};
@@ -114,11 +115,9 @@ async fn test_chain_listener() -> anyhow::Result<()> {
     let storage_builder = MemoryStorageBuilder::default();
     let clock = storage_builder.clock().clone();
     let mut builder = TestBuilder::new(storage_builder, 4, 1).await?;
-    let description0 = ChainDescription::Root(0);
-    let description1 = ChainDescription::Root(1);
-    let chain_id0 = ChainId::from(description0);
-    let client0 = builder.add_initial_chain(description0, Amount::ONE).await?;
-    let client1 = builder.add_initial_chain(description1, Amount::ONE).await?;
+    let client0 = builder.add_root_chain(0, Amount::ONE).await?;
+    let chain_id0 = client0.chain_id();
+    let client1 = builder.add_root_chain(1, Amount::ONE).await?;
 
     // Start a chain listener for chain 0 with a new key.
     let genesis_config = make_genesis_config(&builder);
@@ -135,10 +134,11 @@ async fn test_chain_listener() -> anyhow::Result<()> {
             [chain_id0],
             format!("Client node for {:.8}", chain_id0),
             NonZeroUsize::new(20).expect("Chain worker LRU cache size must be non-zero"),
+            DEFAULT_GRACE_PERIOD,
         )),
     };
     let key_pair = KeyPair::generate_from(&mut rng);
-    let public_key = key_pair.public();
+    let owner = key_pair.public().into();
     context
         .update_wallet_for_new_chain(chain_id0, Some(key_pair), clock.current_time())
         .await?;
@@ -148,7 +148,7 @@ async fn test_chain_listener() -> anyhow::Result<()> {
 
     // Transfer ownership of chain 0 to the chain listener and some other key. The listener will
     // be leader in ~10% of the rounds.
-    let owners = [(public_key, 1), (PublicKey::test_key(1), 9)];
+    let owners = [(owner, 1), (PublicKey::test_key(1).into(), 9)];
     let timeout_config = TimeoutConfig {
         base_timeout: TimeDelta::from_secs(1),
         timeout_increment: TimeDelta::ZERO,

@@ -4,7 +4,9 @@
 use linera_base::{
     crypto::CryptoHash,
     data_types::{Amount, ApplicationPermissions, BlockHeight, SendMessageRequest, Timestamp},
-    identifiers::{Account, ApplicationId, ChainId, ChannelName, MessageId, Owner, StreamName},
+    identifiers::{
+        Account, AccountOwner, ApplicationId, ChainId, ChannelName, MessageId, Owner, StreamName,
+    },
     ownership::{ChainOwnership, CloseChainError},
 };
 use linera_views::batch::{Batch, WriteOperation};
@@ -14,8 +16,8 @@ use tracing::log;
 
 use super::WasmExecutionError;
 use crate::{
-    BaseRuntime, ContractRuntime, ContractSyncRuntimeHandle, ExecutionError, ServiceRuntime,
-    ServiceSyncRuntimeHandle,
+    BaseRuntime, BytecodeId, ContractRuntime, ContractSyncRuntimeHandle, ExecutionError,
+    ServiceRuntime, ServiceSyncRuntimeHandle,
 };
 
 /// Common host data used as the `UserData` of the system API implementations.
@@ -184,7 +186,10 @@ where
     }
 
     /// Returns the balance of one of the accounts on this chain.
-    fn read_owner_balance(caller: &mut Caller, owner: Owner) -> Result<Amount, RuntimeError> {
+    fn read_owner_balance(
+        caller: &mut Caller,
+        owner: AccountOwner,
+    ) -> Result<Amount, RuntimeError> {
         caller
             .user_data_mut()
             .runtime
@@ -234,7 +239,7 @@ where
     /// balance) to `destination`.
     fn transfer(
         caller: &mut Caller,
-        source: Option<Owner>,
+        source: Option<AccountOwner>,
         destination: Account,
         amount: Amount,
     ) -> Result<(), RuntimeError> {
@@ -293,6 +298,22 @@ where
             }
             Err(error) => Err(RuntimeError::Custom(error.into())),
         }
+    }
+
+    /// Creates a new application on the chain, based on the supplied bytecode and
+    /// parameters.
+    fn create_application(
+        caller: &mut Caller,
+        bytecode_id: BytecodeId,
+        parameters: Vec<u8>,
+        argument: Vec<u8>,
+        required_application_ids: Vec<ApplicationId>,
+    ) -> Result<ApplicationId, RuntimeError> {
+        caller
+            .user_data_mut()
+            .runtime
+            .create_application(bytecode_id, parameters, argument, required_application_ids)
+            .map_err(|error| RuntimeError::Custom(error.into()))
     }
 
     /// Calls another application.
@@ -482,7 +503,10 @@ where
     }
 
     /// Returns the balance of one of the accounts on this chain.
-    fn read_owner_balance(caller: &mut Caller, owner: Owner) -> Result<Amount, RuntimeError> {
+    fn read_owner_balance(
+        caller: &mut Caller,
+        owner: AccountOwner,
+    ) -> Result<Amount, RuntimeError> {
         caller
             .user_data_mut()
             .runtime
@@ -500,7 +524,9 @@ where
     }
 
     /// Returns the balances of all accounts on the chain.
-    fn read_owner_balances(caller: &mut Caller) -> Result<Vec<(Owner, Amount)>, RuntimeError> {
+    fn read_owner_balances(
+        caller: &mut Caller,
+    ) -> Result<Vec<(AccountOwner, Amount)>, RuntimeError> {
         caller
             .user_data_mut()
             .runtime
@@ -509,7 +535,7 @@ where
     }
 
     /// Returns the owners of accounts on this chain.
-    fn read_balance_owners(caller: &mut Caller) -> Result<Vec<Owner>, RuntimeError> {
+    fn read_balance_owners(caller: &mut Caller) -> Result<Vec<AccountOwner>, RuntimeError> {
         caller
             .user_data_mut()
             .runtime

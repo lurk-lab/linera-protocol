@@ -6,11 +6,12 @@ use custom_debug_derive::Debug;
 use linera_base::{
     crypto::{CryptoHash, Signature},
     data_types::Round,
+    hashed::Hashed,
 };
 use linera_execution::committee::{Committee, ValidatorName};
 
-use super::hashed::Hashed;
-use crate::ChainError;
+use super::CertificateValue;
+use crate::{data_types::LiteValue, ChainError};
 
 /// Generic type representing a certificate for `value` of type `T`.
 #[derive(Debug)]
@@ -95,9 +96,29 @@ impl<T> GenericCertificate<T> {
     }
 
     /// Verifies the certificate.
-    pub fn check(&self, committee: &Committee) -> Result<(), ChainError> {
-        crate::data_types::check_signatures(self.hash(), self.round, &self.signatures, committee)?;
+    pub fn check(&self, committee: &Committee) -> Result<(), ChainError>
+    where
+        T: CertificateValue,
+    {
+        crate::data_types::check_signatures(
+            self.hash(),
+            T::KIND,
+            self.round,
+            &self.signatures,
+            committee,
+        )?;
         Ok(())
+    }
+
+    pub fn lite_certificate(&self) -> crate::certificate::LiteCertificate<'_>
+    where
+        T: CertificateValue,
+    {
+        crate::certificate::LiteCertificate {
+            value: LiteValue::new(&self.value),
+            round: self.round,
+            signatures: std::borrow::Cow::Borrowed(&self.signatures),
+        }
     }
 }
 

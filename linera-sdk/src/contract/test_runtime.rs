@@ -15,11 +15,20 @@ use linera_base::{
         Amount, ApplicationPermissions, BlockHeight, Resources, SendMessageRequest, Timestamp,
     },
     identifiers::{
-        Account, ApplicationId, ChainId, ChannelName, Destination, MessageId, Owner, StreamName,
+        Account, AccountOwner, ApplicationId, BytecodeId, ChainId, ChannelName, Destination,
+        MessageId, Owner, StreamName,
     },
     ownership::{ChainOwnership, CloseChainError},
 };
 use serde::Serialize;
+
+struct ExpectedCreateApplicationCall {
+    bytecode_id: BytecodeId,
+    parameters: Vec<u8>,
+    argument: Vec<u8>,
+    required_application_ids: Vec<ApplicationId>,
+    application_id: ApplicationId,
+}
 
 /// A mock of the common runtime to interface with the host executing the contract.
 pub struct MockContractRuntime<Application>
@@ -37,7 +46,7 @@ where
     authenticated_caller_id: Option<Option<ApplicationId>>,
     timestamp: Option<Timestamp>,
     chain_balance: Option<Amount>,
-    owner_balances: Option<HashMap<Owner, Amount>>,
+    owner_balances: Option<HashMap<AccountOwner, Amount>>,
     chain_ownership: Option<ChainOwnership>,
     can_close_chain: Option<bool>,
     call_application_handler: Option<CallApplicationHandler>,
@@ -53,6 +62,7 @@ where
     expected_assert_data_blob_exists_requests: VecDeque<(DataBlobHash, Option<()>)>,
     expected_open_chain_calls:
         VecDeque<(ChainOwnership, ApplicationPermissions, Amount, MessageId)>,
+    expected_create_application_calls: VecDeque<ExpectedCreateApplicationCall>,
     key_value_store: KeyValueStore,
 }
 
@@ -98,6 +108,7 @@ where
             expected_read_data_blob_requests: VecDeque::new(),
             expected_assert_data_blob_exists_requests: VecDeque::new(),
             expected_open_chain_calls: VecDeque::new(),
+            expected_create_application_calls: VecDeque::new(),
             key_value_store: KeyValueStore::mock().to_mut(),
         }
     }
@@ -370,7 +381,7 @@ where
     /// Configures the balances on the chain to use during the test.
     pub fn with_owner_balances(
         mut self,
-        owner_balances: impl IntoIterator<Item = (Owner, Amount)>,
+        owner_balances: impl IntoIterator<Item = (AccountOwner, Amount)>,
     ) -> Self {
         self.owner_balances = Some(owner_balances.into_iter().collect());
         self
@@ -379,20 +390,20 @@ where
     /// Configures the balances on the chain to use during the test.
     pub fn set_owner_balances(
         &mut self,
-        owner_balances: impl IntoIterator<Item = (Owner, Amount)>,
+        owner_balances: impl IntoIterator<Item = (AccountOwner, Amount)>,
     ) -> &mut Self {
         self.owner_balances = Some(owner_balances.into_iter().collect());
         self
     }
 
     /// Configures the balance of one account on the chain to use during the test.
-    pub fn with_owner_balance(mut self, owner: Owner, balance: Amount) -> Self {
+    pub fn with_owner_balance(mut self, owner: AccountOwner, balance: Amount) -> Self {
         self.set_owner_balance(owner, balance);
         self
     }
 
     /// Configures the balance of one account on the chain to use during the test.
-    pub fn set_owner_balance(&mut self, owner: Owner, balance: Amount) -> &mut Self {
+    pub fn set_owner_balance(&mut self, owner: AccountOwner, balance: Amount) -> &mut Self {
         self.owner_balances
             .get_or_insert_with(HashMap::new)
             .insert(owner, balance);
@@ -400,12 +411,12 @@ where
     }
 
     /// Returns the balance of one of the accounts on this chain.
-    pub fn owner_balance(&mut self, owner: Owner) -> Amount {
+    pub fn owner_balance(&mut self, owner: AccountOwner) -> Amount {
         *self.owner_balance_mut(owner)
     }
 
     /// Returns a mutable reference to the balance of one of the accounts on this chain.
-    fn owner_balance_mut(&mut self, owner: Owner) -> &mut Amount {
+    fn owner_balance_mut(&mut self, owner: AccountOwner) -> &mut Amount {
         self.owner_balances
             .as_mut()
             .expect(
@@ -470,7 +481,7 @@ where
 
     /// Transfers an `amount` of native tokens from `source` owner account (or the current chain's
     /// balance) to `destination`.
-    pub fn transfer(&mut self, source: Option<Owner>, destination: Account, amount: Amount) {
+    pub fn transfer(&mut self, source: Option<AccountOwner>, destination: Account, amount: Amount) {
         self.debit(source, amount);
 
         if Some(destination.chain_id) == self.chain_id {
@@ -485,7 +496,7 @@ where
 
     /// Debits an `amount` of native tokens from a `source` owner account (or the current
     /// chain's balance).
-    fn debit(&mut self, source: Option<Owner>, amount: Amount) {
+    fn debit(&mut self, source: Option<AccountOwner>, amount: Amount) {
         let source_balance = match source {
             Some(owner) => self.owner_balance_mut(owner),
             None => self.chain_balance_mut(),
@@ -498,7 +509,7 @@ where
 
     /// Credits an `amount` of native tokens into a `destination` owner account (or the
     /// current chain's balance).
-    fn credit(&mut self, destination: Option<Owner>, amount: Amount) {
+    fn credit(&mut self, destination: Option<AccountOwner>, amount: Amount) {
         let destination_balance = match destination {
             Some(owner) => self.owner_balance_mut(owner),
             None => self.chain_balance_mut(),
@@ -616,6 +627,60 @@ where
         assert_eq!(balance, expected_balance);
         let chain_id = ChainId::child(message_id);
         (message_id, chain_id)
+    }
+
+    /// Adds a new expected call to `create_application`.
+    pub fn add_expected_create_application_call<A: Contract>(
+        &mut self,
+        bytecode_id: BytecodeId,
+        parameters: &A::Parameters,
+        argument: &A::InstantiationArgument,
+        required_application_ids: Vec<ApplicationId>,
+        application_id: ApplicationId,
+    ) {
+        let parameters = bcs::to_bytes(parameters)
+            .expect("Failed to serialize `Parameters` type for a cross-application call");
+        let argument = bcs::to_bytes(argument).expect(
+            "Failed to serialize `InstantiationArgument` type for a cross-application call",
+        );
+        self.expected_create_application_calls
+            .push_back(ExpectedCreateApplicationCall {
+                bytecode_id,
+                parameters,
+                argument,
+                required_application_ids,
+                application_id,
+            });
+    }
+
+    /// Creates a new on-chain application, based on the supplied bytecode and parameters.
+    pub fn create_application<A: Contract>(
+        &mut self,
+        bytecode_id: BytecodeId,
+        parameters: &A::Parameters,
+        argument: &A::InstantiationArgument,
+        required_application_ids: Vec<ApplicationId>,
+    ) -> ApplicationId<A::Abi> {
+        let ExpectedCreateApplicationCall {
+            bytecode_id: expected_bytecode_id,
+            parameters: expected_parameters,
+            argument: expected_argument,
+            required_application_ids: expected_required_app_ids,
+            application_id,
+        } = self
+            .expected_create_application_calls
+            .pop_front()
+            .expect("Unexpected create_application call");
+        let parameters = bcs::to_bytes(parameters)
+            .expect("Failed to serialize `Parameters` type for a cross-application call");
+        let argument = bcs::to_bytes(argument).expect(
+            "Failed to serialize `InstantiationArgument` type for a cross-application call",
+        );
+        assert_eq!(bytecode_id, expected_bytecode_id);
+        assert_eq!(parameters, expected_parameters);
+        assert_eq!(argument, expected_argument);
+        assert_eq!(required_application_ids, expected_required_app_ids);
+        application_id.with_abi::<A::Abi>()
     }
 
     /// Configures the handler for cross-application calls made during the test.

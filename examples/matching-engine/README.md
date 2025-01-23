@@ -1,5 +1,3 @@
-<!-- cargo-rdme start -->
-
 # Matching Engine Example Application
 
 This sample application demonstrates a matching engine, showcasing the DeFi capabilities
@@ -36,9 +34,9 @@ When inserting an order it goes through the following steps:
 When an order is created from a remote chain, it transfers the tokens of the same owner
 from the remote chain to the chain of the matching engine, and a `ExecuteOrder` message is sent with the order details.
 
-# Usage
+## Usage
 
-## Setting Up
+### Setting Up
 
 Before getting started, make sure that the binary tools `linera*` corresponding to
 your version of `linera-sdk` are in your PATH. For scripting purposes, we also assume
@@ -66,8 +64,6 @@ OWNER_2=a477cb966190661c0dfbe50602616a78a48d2bef6cb5288d49deb3e05585d579
 OWNER_3=d2115775b5b3c5c1ed3c1516319a7e850c75d0786a74b39f5250cf9decc88124
 CHAIN_1=e476187f6ddfeb9d588c7b45d3df334d5501d6499b3f9ad5595cae86cce16a65
 CHAIN_2=69705f85ac4c9fef6c02b4d83426aaaf05154c645ec1c61665f8e450f0468bc0
-PUB_KEY_1=fcf518d56455283ace2bbc11c71e684eb58af81bc98b96a18129e825ce24ea84
-PUB_KEY_2=ca909dcf60df014c166be17eb4a9f6e2f9383314a57510206a54cd841ade455e
 ```
 
 Publish and create two `fungible` applications whose IDs will be used as a
@@ -111,7 +107,7 @@ linera --wait-for-outgoing-messages request-application \
     --requester-chain-id $CHAIN_2 $MATCHING_ENGINE
 ```
 
-## Using the Matching Engine Application
+### Using the Matching Engine Application
 
 First, a node service for the current wallet has to be started:
 
@@ -120,7 +116,7 @@ PORT=8080
 linera service --port $PORT &
 ```
 
-### Using GraphiQL
+#### Using GraphiQL
 
 Type each of these in the GraphiQL interface and substitute the env variables with their actual values that we've defined above.
 
@@ -157,7 +153,7 @@ query {
 }
 ```
 
-### Atomic Swaps
+#### Atomic Swaps
 
 In general, if you send tokens to a chain owned by someone else, you rely on them
 for asset availability: If they don't handle your messages, you don't have access to
@@ -172,7 +168,7 @@ Engine to close the chain.
 kill %% && sleep 1    # Kill the service so we can use CLI commands for chain 1.
 
 linera --wait-for-outgoing-messages change-ownership \
-    --owner-public-keys $PUB_KEY_1 $PUB_KEY_2
+    --owners $OWNER_1 $OWNER_2
 
 linera --wait-for-outgoing-messages change-application-permissions \
     --execute-operations $MATCHING_ENGINE \
@@ -185,17 +181,17 @@ First, owner 2 should claim their tokens. Navigate to the URL you get by running
 
 ```gql,uri=http://localhost:8080/chains/$CHAIN_2/applications/$FUN1_APP_ID
 mutation {
-    claim(
-        sourceAccount: {
-            chainId: "$CHAIN_1",
-            owner: "User:$OWNER_2",
-        }
-        amount: "100.",
-        targetAccount: {
-            chainId: "$CHAIN_2",
-            owner: "User:$OWNER_3"
-        }
-    )
+  claim(
+    sourceAccount: {
+      chainId: "$CHAIN_1",
+      owner: "User:$OWNER_2",
+    }
+    amount: "100.",
+    targetAccount: {
+      chainId: "$CHAIN_2",
+      owner: "User:$OWNER_3"
+    }
+  )
 }
 ```
 
@@ -203,17 +199,17 @@ And to the URL you get by running `echo "http://localhost:8080/chains/$CHAIN_2/a
 
 ```gql,uri=http://localhost:8080/chains/$CHAIN_2/applications/$FUN2_APP_ID
 mutation {
-    claim(
-        sourceAccount: {
-            chainId: "$CHAIN_1",
-            owner: "User:$OWNER_2",
-        }
-        amount: "150.",
-        targetAccount: {
-            chainId: "$CHAIN_2",
-            owner: "User:$OWNER_2"
-        }
-    )
+  claim(
+    sourceAccount: {
+      chainId: "$CHAIN_1",
+      owner: "User:$OWNER_2",
+    }
+    amount: "150.",
+    targetAccount: {
+      chainId: "$CHAIN_2",
+      owner: "User:$OWNER_2"
+    }
+  )
 }
 ```
 
@@ -224,7 +220,7 @@ for 5 FUN2 from owner 1. This leaves 5 FUN2 of owner 2 on chain 1. On the URL yo
 mutation {
   executeOrder(
     order: {
-        Insert : {
+      Insert : {
         owner: "User:$OWNER_2",
         amount: "2",
         nature: Ask,
@@ -247,14 +243,12 @@ Owner 2 should now get back their tokens, and have 145 FUN2 left. On the URL you
 
 ```gql,uri=http://localhost:8080/chains/$CHAIN_2/applications/$FUN2_APP_ID
 query {
-    accounts {
-        entry(
-            key: "User:$OWNER_2"
-        ) {
-            value
-        }
+  accounts {
+    entry(
+      key: "User:$OWNER_2"
+    ) {
+      value
     }
+  }
 }
 ```
-
-<!-- cargo-rdme end -->

@@ -9,7 +9,7 @@ use std::{
 use futures::{stream::FuturesOrdered, FutureExt, StreamExt, TryStreamExt};
 use linera_base::{
     data_types::{Amount, BlockHeight, Timestamp},
-    identifiers::{Account, ChainId, Destination, Owner},
+    identifiers::{Account, AccountOwner, ChainId, Destination, Owner},
 };
 use linera_views::{
     context::Context,
@@ -87,6 +87,9 @@ where
             .register_application(application_description)
             .await?;
 
+        self.system.used_blobs.insert(&contract_blob.id())?;
+        self.system.used_blobs.insert(&service_blob.id())?;
+
         self.context()
             .extra()
             .user_contracts()
@@ -94,7 +97,8 @@ where
 
         self.context()
             .extra()
-            .add_blobs(vec![contract_blob, service_blob]);
+            .add_blobs([contract_blob, service_blob])
+            .await?;
 
         let tracker = ResourceTracker::default();
         let policy = ResourceControlPolicy::default();
@@ -203,23 +207,33 @@ where
         let (execution_state_sender, mut execution_state_receiver) =
             futures::channel::mpsc::unbounded();
         let txn_tracker_moved = mem::take(txn_tracker);
-        let execution_outcomes_future = linera_base::task::spawn_blocking(move || {
-            ContractSyncRuntime::run_action(
+        let (code, description) = self.load_contract(application_id).await?;
+        let contract_runtime_task = linera_base::task::Blocking::spawn(move |mut codes| {
+            let runtime = ContractSyncRuntime::new(
                 execution_state_sender,
-                application_id,
                 chain_id,
                 local_time,
                 refund_grant_to,
                 controller,
-                action,
+                &action,
                 txn_tracker_moved,
-            )
-        });
+            );
+
+            async move {
+                let code = codes.next().await.expect("we send this immediately below");
+                runtime.preload_contract(application_id, code, description)?;
+                runtime.run_action(application_id, chain_id, action)
+            }
+        })
+        .await;
+
+        contract_runtime_task.send(code)?;
+
         while let Some(request) = execution_state_receiver.next().await {
             self.handle_request(request).await?;
         }
 
-        let (controller, txn_tracker_moved) = execution_outcomes_future.await??;
+        let (controller, txn_tracker_moved) = contract_runtime_task.join().await?;
         *txn_tracker = txn_tracker_moved;
         resource_controller
             .with_state_and_grant(self, grant)
@@ -448,7 +462,7 @@ where
             kind: MessageKind::Tracked,
             message: SystemMessage::Credit {
                 amount,
-                source: context.authenticated_signer,
+                source: context.authenticated_signer.map(AccountOwner::User),
                 target: account.owner,
             },
         };
@@ -503,16 +517,26 @@ where
     ) -> Result<Vec<u8>, ExecutionError> {
         let (execution_state_sender, mut execution_state_receiver) =
             futures::channel::mpsc::unbounded();
-        let execution_outcomes_future = linera_base::task::spawn_blocking(move || {
+        let (code, description) = self.load_service(application_id).await?;
+
+        let service_runtime_task = linera_base::task::Blocking::spawn(move |mut codes| {
             let mut runtime = ServiceSyncRuntime::new(execution_state_sender, context);
-            runtime.run_query(application_id, query)
-        });
+
+            async move {
+                let code = codes.next().await.expect("we send this immediately below");
+                runtime.preload_service(application_id, code, description)?;
+                runtime.run_query(application_id, query)
+            }
+        })
+        .await;
+
+        service_runtime_task.send(code)?;
+
         while let Some(request) = execution_state_receiver.next().await {
             self.handle_request(request).await?;
         }
 
-        let response = execution_outcomes_future.await??;
-        Ok(response)
+        service_runtime_task.join().await
     }
 
     async fn query_user_application_with_long_lived_service(

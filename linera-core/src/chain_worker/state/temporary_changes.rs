@@ -4,17 +4,21 @@
 //! Operations that don't persist any changes to the chain state.
 
 use linera_base::{
-    data_types::{ArithmeticError, BlobContent, Timestamp, UserApplicationDescription},
+    data_types::{
+        ArithmeticError, Blob, BlobContent, CompressedBytecode, Timestamp,
+        UserApplicationDescription,
+    },
     ensure,
-    identifiers::{GenericApplicationId, UserApplicationId},
+    hashed::Hashed,
+    identifiers::{AccountOwner, BlobType, GenericApplicationId, Owner, UserApplicationId},
 };
 use linera_chain::{
     data_types::{
-        Block, BlockExecutionOutcome, BlockProposal, ChannelFullName, ExecutedBlock,
-        IncomingBundle, Medium, MessageAction, ProposalContent,
+        BlockExecutionOutcome, BlockProposal, ChannelFullName, ExecutedBlock, IncomingBundle,
+        Medium, MessageAction, ProposalContent, ProposedBlock,
     },
     manager,
-    types::HashedCertificateValue,
+    types::ValidatedBlock,
 };
 use linera_execution::{ChannelSubscription, Query, ResourceControlPolicy, Response};
 use linera_storage::{Clock as _, Storage};
@@ -122,14 +126,14 @@ where
     /// Executes a block without persisting any changes to the state.
     pub(super) async fn stage_block_execution(
         &mut self,
-        block: Block,
+        proposal: ProposedBlock,
     ) -> Result<(ExecutedBlock, ChainInfoResponse), WorkerError> {
         let local_time = self.0.storage.clock().current_time();
-        let signer = block.authenticated_signer;
+        let signer = proposal.authenticated_signer;
 
-        let executed_block = Box::pin(self.0.chain.execute_block(&block, local_time, None))
+        let executed_block = Box::pin(self.0.chain.execute_block(&proposal, local_time, None))
             .await?
-            .with(block);
+            .with(proposal);
 
         let mut response = ChainInfoResponse::new(&self.0.chain, None);
         if let Some(signer) = signer {
@@ -139,7 +143,7 @@ where
                 .execution_state
                 .system
                 .balances
-                .get(&signer)
+                .get(&AccountOwner::User(signer))
                 .await?;
         }
 
@@ -156,20 +160,25 @@ where
                 ProposalContent {
                     block,
                     round,
-                    forced_oracle_responses,
+                    outcome,
                 },
+            public_key,
             owner,
             blobs,
             validated_block_certificate,
             signature: _,
         } = proposal;
         ensure!(
-            validated_block_certificate.is_some() == forced_oracle_responses.is_some(),
+            validated_block_certificate.is_some() == outcome.is_some(),
             WorkerError::InvalidBlockProposal(
                 "Must contain a validation certificate if and only if \
-                 oracle responses are forced from a previous round"
+                 it contains the execution outcome from a previous round"
                     .to_string()
             )
+        );
+        ensure!(
+            *owner == Owner::from(public_key),
+            WorkerError::InvalidBlockProposal("Public key does not match owner".into())
         );
         self.0.ensure_is_active()?;
         // Check the epoch.
@@ -180,18 +189,14 @@ where
             .system
             .current_committee()
             .expect("chain is active");
-        check_block_epoch(epoch, block)?;
+        check_block_epoch(epoch, block.chain_id, block.epoch)?;
         let policy = committee.policy().clone();
-        proposal.check_size(policy.maximum_block_proposal_size)?;
         // Check the authentication of the block.
-        let public_key = self
-            .0
-            .chain
-            .manager
-            .get()
-            .verify_owner(proposal)
-            .ok_or(WorkerError::InvalidOwner)?;
-        proposal.check_signature(public_key)?;
+        ensure!(
+            self.0.chain.manager.verify_owner(proposal),
+            WorkerError::InvalidOwner
+        );
+        proposal.check_signature(*public_key)?;
         if let Some(lite_certificate) = validated_block_certificate {
             // Verify that this block has been validated by a quorum before.
             lite_certificate.check(committee)?;
@@ -202,24 +207,22 @@ where
         // Check if the chain is ready for this new block proposal.
         // This should always pass for nodes without voting key.
         self.0.chain.tip_state.get().verify_block_chaining(block)?;
-        if self.0.chain.manager.get().check_proposed_block(proposal)? == manager::Outcome::Skip {
+        if self.0.chain.manager.check_proposed_block(proposal)? == manager::Outcome::Skip {
             return Ok(None);
         }
         // Update the inboxes so that we can verify the provided hashed certificate values are
         // legitimately required.
         // Actual execution happens below, after other validity checks.
-        self.0.chain.remove_bundles_from_inboxes(block).await?;
+        self.0
+            .chain
+            .remove_bundles_from_inboxes(block.timestamp, &block.incoming_bundles)
+            .await?;
         // Verify that no unrelated blobs were provided.
         let published_blob_ids = block.published_blob_ids();
-        self.0
-            .check_for_unneeded_blobs(&published_blob_ids, blobs)?;
-        let missing_published_blob_ids = published_blob_ids
-            .difference(&blobs.iter().map(|blob| blob.id()).collect())
-            .cloned()
-            .collect::<Vec<_>>();
+        let provided_blob_ids = blobs.iter().map(Blob::id);
         ensure!(
-            missing_published_blob_ids.is_empty(),
-            WorkerError::BlobsNotFound(missing_published_blob_ids)
+            published_blob_ids.iter().copied().eq(provided_blob_ids),
+            WorkerError::WrongBlobsInProposal
         );
         for blob in blobs {
             Self::check_blob_size(blob.content(), &policy)?;
@@ -232,40 +235,40 @@ where
         );
         self.0.storage.clock().sleep_until(block.timestamp).await;
         let local_time = self.0.storage.clock().current_time();
+        let outcome = if let Some(outcome) = outcome {
+            outcome.clone()
+        } else {
+            Box::pin(self.0.chain.execute_block(block, local_time, None)).await?
+        };
 
-        let outcome = Box::pin(self.0.chain.execute_block(
-            block,
-            local_time,
-            forced_oracle_responses.clone(),
-        ))
-        .await?;
-
+        let executed_block = outcome.with(block.clone());
+        let required_blobs = self
+            .0
+            .get_required_blobs(executed_block.required_blob_ids(), blobs)
+            .await?
+            .into_values()
+            .collect::<Vec<_>>();
+        block.check_proposal_size(policy.maximum_block_proposal_size, &required_blobs)?;
         if let Some(lite_certificate) = &validated_block_certificate {
-            let value = HashedCertificateValue::new_validated(outcome.clone().with(block.clone()));
+            let value = Hashed::new(ValidatedBlock::new(executed_block.clone()));
             lite_certificate
                 .clone()
                 .with_value(value)
                 .ok_or_else(|| WorkerError::InvalidLiteCertificate)?;
         }
-        if round.is_fast() {
-            ensure!(
-                outcome
-                    .oracle_responses
-                    .iter()
-                    .flatten()
-                    .all(|response| response.is_permitted_in_fast_blocks()),
-                WorkerError::FastBlockUsingOracles
-            );
-        }
+        ensure!(
+            !round.is_fast() || !executed_block.outcome.has_oracle_responses(),
+            WorkerError::FastBlockUsingOracles
+        );
         // Check if the counters of tip_state would be valid.
         self.0
             .chain
             .tip_state
             .get()
-            .verify_counters(block, &outcome)?;
+            .verify_counters(block, &executed_block.outcome)?;
         // Verify that the resulting chain would have no unconfirmed incoming messages.
         self.0.chain.validate_incoming_bundles().await?;
-        Ok(Some((outcome, local_time)))
+        Ok(Some((executed_block.outcome, local_time)))
     }
 
     /// Prepares a [`ChainInfoResponse`] for a [`ChainInfoQuery`].
@@ -342,7 +345,7 @@ where
             info.requested_received_log = chain.received_log.read(start..).await?;
         }
         if query.request_manager_values {
-            info.manager.add_values(chain.manager.get());
+            info.manager.add_values(&chain.manager);
         }
         Ok(ChainInfoResponse::new(info, self.0.config.key_pair()))
     }
@@ -352,20 +355,22 @@ where
         policy: &ResourceControlPolicy,
     ) -> Result<(), WorkerError> {
         ensure!(
-            u64::try_from(content.size())
+            u64::try_from(content.bytes().len())
                 .ok()
                 .is_some_and(|size| size <= policy.maximum_blob_size),
             WorkerError::BlobTooLarge
         );
-        match content {
-            BlobContent::ContractBytecode(compressed_bytecode)
-            | BlobContent::ServiceBytecode(compressed_bytecode) => {
+        match content.blob_type() {
+            BlobType::ContractBytecode | BlobType::ServiceBytecode => {
                 ensure!(
-                    compressed_bytecode.decompressed_size_at_most(policy.maximum_bytecode_size)?,
+                    CompressedBytecode::decompressed_size_at_most(
+                        content.bytes(),
+                        policy.maximum_bytecode_size
+                    )?,
                     WorkerError::BytecodeTooLarge
                 );
             }
-            BlobContent::Data(_) => {}
+            BlobType::Data => {}
         }
         Ok(())
     }

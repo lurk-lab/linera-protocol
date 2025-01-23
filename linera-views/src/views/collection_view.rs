@@ -6,7 +6,6 @@ use std::sync::LazyLock;
 use std::{
     borrow::Borrow,
     collections::{btree_map, BTreeMap},
-    fmt::Debug,
     io::Write,
     marker::PhantomData,
     mem,
@@ -586,6 +585,31 @@ where
         .await?;
         Ok(keys)
     }
+
+    /// Returns the number of entries in the collection.
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::{create_test_memory_context, MemoryContext};
+    /// # use linera_views::collection_view::ByteCollectionView;
+    /// # use linera_views::register_view::RegisterView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut view: ByteCollectionView<_, RegisterView<_, String>> =
+    ///     ByteCollectionView::load(context).await.unwrap();
+    /// view.load_entry_mut(&[0, 1]).await.unwrap();
+    /// view.load_entry_mut(&[0, 2]).await.unwrap();
+    /// assert_eq!(view.count().await.unwrap(), 2);
+    /// # })
+    /// ```
+    pub async fn count(&self) -> Result<usize, ViewError> {
+        let mut count = 0;
+        self.for_each_key(|_key| {
+            count += 1;
+            Ok(())
+        })
+        .await?;
+        Ok(count)
+    }
 }
 
 #[async_trait]
@@ -602,7 +626,8 @@ where
         let _hash_latency = COLLECTION_VIEW_HASH_RUNTIME.measure_latency();
         let mut hasher = sha3::Sha3_256::default();
         let keys = self.keys().await?;
-        hasher.update_with_bcs_bytes(&keys.len())?;
+        let count = keys.len() as u32;
+        hasher.update_with_bcs_bytes(&count)?;
         let updates = self.updates.get_mut();
         for key in keys {
             hasher.update_with_bytes(&key)?;
@@ -630,7 +655,8 @@ where
         let _hash_latency = COLLECTION_VIEW_HASH_RUNTIME.measure_latency();
         let mut hasher = sha3::Sha3_256::default();
         let keys = self.keys().await?;
-        hasher.update_with_bcs_bytes(&keys.len())?;
+        let count = keys.len() as u32;
+        hasher.update_with_bcs_bytes(&count)?;
         let updates = self.updates.read().await;
         for key in keys {
             hasher.update_with_bytes(&key)?;
@@ -667,7 +693,7 @@ impl<C, I, W> View<C> for CollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Debug + Serialize + DeserializeOwned,
+    I: Send + Sync + Serialize + DeserializeOwned,
     W: View<C> + Send + Sync,
 {
     const NUM_INIT_KEYS: usize = ByteCollectionView::<C, W>::NUM_INIT_KEYS;
@@ -713,7 +739,7 @@ impl<C, I, W> ClonableView<C> for CollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Debug + Serialize + DeserializeOwned,
+    I: Send + Sync + Serialize + DeserializeOwned,
     W: ClonableView<C> + Send + Sync,
 {
     fn clone_unchecked(&mut self) -> Result<Self, ViewError> {
@@ -885,7 +911,7 @@ impl<C, I, W> CollectionView<C, I, W>
 where
     C: Context + Send,
     ViewError: From<C::Error>,
-    I: Sync + Clone + Send + Debug + Serialize + DeserializeOwned,
+    I: Sync + Clone + Send + Serialize + DeserializeOwned,
     W: View<C> + Sync,
 {
     /// Returns the list of indices in the collection in the order determined by
@@ -907,12 +933,31 @@ where
     /// ```
     pub async fn indices(&self) -> Result<Vec<I>, ViewError> {
         let mut indices = Vec::new();
-        self.for_each_index(|index: I| {
+        self.for_each_index(|index| {
             indices.push(index);
             Ok(())
         })
         .await?;
         Ok(indices)
+    }
+
+    /// Returns the number of entries in the collection.
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::{create_test_memory_context, MemoryContext};
+    /// # use linera_views::collection_view::CollectionView;
+    /// # use linera_views::register_view::RegisterView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut view: CollectionView<_, u64, RegisterView<_, String>> =
+    ///     CollectionView::load(context).await.unwrap();
+    /// view.load_entry_mut(&23).await.unwrap();
+    /// view.load_entry_mut(&25).await.unwrap();
+    /// assert_eq!(view.count().await.unwrap(), 2);
+    /// # })
+    /// ```
+    pub async fn count(&self) -> Result<usize, ViewError> {
+        self.collection.count().await
     }
 }
 
@@ -920,7 +965,7 @@ impl<C, I, W> CollectionView<C, I, W>
 where
     C: Context + Send,
     ViewError: From<C::Error>,
-    I: Debug + DeserializeOwned,
+    I: DeserializeOwned,
     W: View<C> + Sync,
 {
     /// Applies a function f on each index. Indices are visited in an order
@@ -1002,7 +1047,7 @@ impl<C, I, W> HashableView<C> for CollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Clone + Debug + Send + Sync + Serialize + DeserializeOwned,
+    I: Clone + Send + Sync + Serialize + DeserializeOwned,
     W: HashableView<C> + Send + Sync + 'static,
 {
     type Hasher = sha3::Sha3_256;
@@ -1028,7 +1073,7 @@ impl<C, I, W> View<C> for CustomCollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Debug,
+    I: Send + Sync,
     W: View<C> + Send + Sync,
 {
     const NUM_INIT_KEYS: usize = ByteCollectionView::<C, W>::NUM_INIT_KEYS;
@@ -1074,7 +1119,7 @@ impl<C, I, W> ClonableView<C> for CustomCollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Send + Sync + Debug,
+    I: Send + Sync,
     W: ClonableView<C> + Send + Sync,
 {
     fn clone_unchecked(&mut self) -> Result<Self, ViewError> {
@@ -1246,7 +1291,7 @@ impl<C, I, W> CustomCollectionView<C, I, W>
 where
     C: Context + Send,
     ViewError: From<C::Error>,
-    I: Send + Debug + CustomSerialize,
+    I: Send + CustomSerialize,
     W: View<C> + Sync,
 {
     /// Returns the list of indices in the collection in the order determined by the custom serialization.
@@ -1267,12 +1312,31 @@ where
     /// ```
     pub async fn indices(&self) -> Result<Vec<I>, ViewError> {
         let mut indices = Vec::new();
-        self.for_each_index(|index: I| {
+        self.for_each_index(|index| {
             indices.push(index);
             Ok(())
         })
         .await?;
         Ok(indices)
+    }
+
+    /// Returns the number of entries in the collection.
+    /// ```rust
+    /// # tokio_test::block_on(async {
+    /// # use linera_views::context::{create_test_memory_context, MemoryContext};
+    /// # use linera_views::collection_view::CollectionView;
+    /// # use linera_views::register_view::RegisterView;
+    /// # use linera_views::views::View;
+    /// # let context = create_test_memory_context();
+    /// let mut view: CollectionView<_, u64, RegisterView<_, String>> =
+    ///     CollectionView::load(context).await.unwrap();
+    /// view.load_entry_mut(&23).await.unwrap();
+    /// view.load_entry_mut(&25).await.unwrap();
+    /// assert_eq!(view.count().await.unwrap(), 2);
+    /// # })
+    /// ```
+    pub async fn count(&self) -> Result<usize, ViewError> {
+        self.collection.count().await
     }
 }
 
@@ -1280,7 +1344,7 @@ impl<C, I, W> CustomCollectionView<C, I, W>
 where
     C: Context + Send,
     ViewError: From<C::Error>,
-    I: Debug + CustomSerialize,
+    I: CustomSerialize,
     W: View<C> + Sync,
 {
     /// Applies a function f on each index. Indices are visited in an order
@@ -1364,7 +1428,7 @@ impl<C, I, W> HashableView<C> for CustomCollectionView<C, I, W>
 where
     C: Context + Send + Sync,
     ViewError: From<C::Error>,
-    I: Clone + Debug + Send + Sync + CustomSerialize,
+    I: Clone + Send + Sync + CustomSerialize,
     W: HashableView<C> + Send + Sync + 'static,
 {
     type Hasher = sha3::Sha3_256;

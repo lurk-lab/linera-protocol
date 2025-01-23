@@ -13,7 +13,7 @@ use linera_base::prometheus_util::{bucket_latencies, register_histogram_vec, Mea
 use linera_base::{
     data_types::{Amount, ApplicationPermissions, BlobContent, Timestamp},
     hex_debug, hex_vec_debug,
-    identifiers::{Account, BlobId, MessageId, Owner},
+    identifiers::{Account, AccountOwner, BlobId, MessageId, Owner},
     ownership::ChainOwnership,
 };
 use linera_views::{batch::Batch, context::Context, views::View};
@@ -23,9 +23,9 @@ use prometheus::HistogramVec;
 use reqwest::{header::CONTENT_TYPE, Client};
 
 use crate::{
-    system::{OpenChainConfig, Recipient},
+    system::{CreateApplicationResult, OpenChainConfig, Recipient},
     util::RespondExt,
-    ExecutionError, ExecutionRuntimeContext, ExecutionStateView, RawExecutionOutcome,
+    BytecodeId, ExecutionError, ExecutionRuntimeContext, ExecutionStateView, RawExecutionOutcome,
     RawOutgoingMessage, SystemExecutionError, SystemMessage, UserApplicationDescription,
     UserApplicationId, UserContractCode, UserServiceCode,
 };
@@ -59,6 +59,36 @@ where
     C: Context + Clone + Send + Sync + 'static,
     C::Extra: ExecutionRuntimeContext,
 {
+    pub(crate) async fn load_contract(
+        &mut self,
+        id: UserApplicationId,
+    ) -> Result<(UserContractCode, UserApplicationDescription), ExecutionError> {
+        #[cfg(with_metrics)]
+        let _latency = LOAD_CONTRACT_LATENCY.measure_latency();
+        let description = self.system.registry.describe_application(id).await?;
+        let code = self
+            .context()
+            .extra()
+            .get_user_contract(&description)
+            .await?;
+        Ok((code, description))
+    }
+
+    pub(crate) async fn load_service(
+        &mut self,
+        id: UserApplicationId,
+    ) -> Result<(UserServiceCode, UserApplicationDescription), ExecutionError> {
+        #[cfg(with_metrics)]
+        let _latency = LOAD_SERVICE_LATENCY.measure_latency();
+        let description = self.system.registry.describe_application(id).await?;
+        let code = self
+            .context()
+            .extra()
+            .get_user_service(&description)
+            .await?;
+        Ok((code, description))
+    }
+
     // TODO(#1416): Support concurrent I/O.
     pub(crate) async fn handle_request(
         &mut self,
@@ -66,29 +96,10 @@ where
     ) -> Result<(), ExecutionError> {
         use ExecutionRequest::*;
         match request {
-            LoadContract { id, callback } => {
-                #[cfg(with_metrics)]
-                let _latency = LOAD_CONTRACT_LATENCY.measure_latency();
-                let description = self.system.registry.describe_application(id).await?;
-                let code = self
-                    .context()
-                    .extra()
-                    .get_user_contract(&description)
-                    .await?;
-                callback.respond((code, description));
-            }
-
-            LoadService { id, callback } => {
-                #[cfg(with_metrics)]
-                let _latency = LOAD_SERVICE_LATENCY.measure_latency();
-                let description = self.system.registry.describe_application(id).await?;
-                let code = self
-                    .context()
-                    .extra()
-                    .get_user_service(&description)
-                    .await?;
-                callback.respond((code, description));
-            }
+            #[cfg(not(web))]
+            LoadContract { id, callback } => callback.respond(self.load_contract(id).await?),
+            #[cfg(not(web))]
+            LoadService { id, callback } => callback.respond(self.load_service(id).await?),
 
             ChainBalance { callback } => {
                 let balance = *self.system.balance.get();
@@ -101,15 +112,8 @@ where
             }
 
             OwnerBalances { callback } => {
-                let mut balances = Vec::new();
-                self.system
-                    .balances
-                    .for_each_index_value(|owner, balance| {
-                        balances.push((owner, balance));
-                        Ok(())
-                    })
-                    .await?;
-                callback.respond(balances);
+                let balances = self.system.balances.index_values().await?;
+                callback.respond(balances.into_iter().collect());
             }
 
             BalanceOwners { callback } => {
@@ -122,12 +126,19 @@ where
                 destination,
                 amount,
                 signer,
+                application_id,
                 callback,
             } => {
                 let mut execution_outcome = RawExecutionOutcome::default();
                 let message = self
                     .system
-                    .transfer(signer, source, Recipient::Account(destination), amount)
+                    .transfer(
+                        signer,
+                        Some(application_id),
+                        source,
+                        Recipient::Account(destination),
+                        amount,
+                    )
                     .await?;
 
                 if let Some(message) = message {
@@ -141,6 +152,7 @@ where
                 destination,
                 amount,
                 signer,
+                application_id,
                 callback,
             } => {
                 let owner = source.owner.ok_or(ExecutionError::OwnerIsNone)?;
@@ -149,6 +161,7 @@ where
                     .system
                     .claim(
                         signer,
+                        Some(application_id),
                         owner,
                         source.chain_id,
                         Recipient::Account(destination),
@@ -258,7 +271,7 @@ where
                     balance,
                     application_permissions,
                 };
-                let messages = self.system.open_chain(config, next_message_id)?;
+                let messages = self.system.open_chain(config, next_message_id).await?;
                 callback.respond(messages)
             }
 
@@ -274,6 +287,25 @@ where
                     self.system.close_chain(chain_id).await?;
                     callback.respond(Ok(()));
                 }
+            }
+
+            CreateApplication {
+                next_message_id,
+                bytecode_id,
+                parameters,
+                required_application_ids,
+                callback,
+            } => {
+                let create_application_result = self
+                    .system
+                    .create_application(
+                        next_message_id,
+                        bytecode_id,
+                        parameters,
+                        required_application_ids,
+                    )
+                    .await?;
+                callback.respond(Ok(create_application_result));
             }
 
             FetchUrl { url, callback } => {
@@ -300,12 +332,13 @@ where
 
             ReadBlobContent { blob_id, callback } => {
                 let blob = self.system.read_blob_content(blob_id).await?;
-                callback.respond(blob);
+                let is_new = self.system.blob_used(None, blob_id).await?;
+                callback.respond((blob, is_new))
             }
 
             AssertBlobExists { blob_id, callback } => {
                 self.system.assert_blob_exists(blob_id).await?;
-                callback.respond(())
+                callback.respond(self.system.blob_used(None, blob_id).await?)
             }
 
             VerifyProof {
@@ -328,12 +361,14 @@ where
 /// Requests to the execution state.
 #[derive(Debug)]
 pub enum ExecutionRequest {
+    #[cfg(not(web))]
     LoadContract {
         id: UserApplicationId,
         #[debug(skip)]
         callback: Sender<(UserContractCode, UserApplicationDescription)>,
     },
 
+    #[cfg(not(web))]
     LoadService {
         id: UserApplicationId,
         #[debug(skip)]
@@ -346,28 +381,29 @@ pub enum ExecutionRequest {
     },
 
     OwnerBalance {
-        owner: Owner,
+        owner: AccountOwner,
         #[debug(skip)]
         callback: Sender<Amount>,
     },
 
     OwnerBalances {
         #[debug(skip)]
-        callback: Sender<Vec<(Owner, Amount)>>,
+        callback: Sender<Vec<(AccountOwner, Amount)>>,
     },
 
     BalanceOwners {
         #[debug(skip)]
-        callback: Sender<Vec<Owner>>,
+        callback: Sender<Vec<AccountOwner>>,
     },
 
     Transfer {
         #[debug(skip_if = Option::is_none)]
-        source: Option<Owner>,
+        source: Option<AccountOwner>,
         destination: Account,
         amount: Amount,
         #[debug(skip_if = Option::is_none)]
         signer: Option<Owner>,
+        application_id: UserApplicationId,
         #[debug(skip)]
         callback: Sender<RawExecutionOutcome<SystemMessage, Amount>>,
     },
@@ -378,6 +414,7 @@ pub enum ExecutionRequest {
         amount: Amount,
         #[debug(skip_if = Option::is_none)]
         signer: Option<Owner>,
+        application_id: UserApplicationId,
         #[debug(skip)]
         callback: Sender<RawExecutionOutcome<SystemMessage, Amount>>,
     },
@@ -461,6 +498,15 @@ pub enum ExecutionRequest {
         callback: oneshot::Sender<Result<(), ExecutionError>>,
     },
 
+    CreateApplication {
+        next_message_id: MessageId,
+        bytecode_id: BytecodeId,
+        parameters: Vec<u8>,
+        required_application_ids: Vec<UserApplicationId>,
+        #[debug(skip)]
+        callback: oneshot::Sender<Result<CreateApplicationResult, ExecutionError>>,
+    },
+
     FetchUrl {
         url: String,
         #[debug(skip)]
@@ -479,13 +525,13 @@ pub enum ExecutionRequest {
     ReadBlobContent {
         blob_id: BlobId,
         #[debug(skip)]
-        callback: Sender<BlobContent>,
+        callback: Sender<(BlobContent, bool)>,
     },
 
     AssertBlobExists {
         blob_id: BlobId,
         #[debug(skip)]
-        callback: Sender<()>,
+        callback: Sender<bool>,
     },
 
     VerifyProof {

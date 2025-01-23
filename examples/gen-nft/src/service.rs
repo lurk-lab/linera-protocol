@@ -24,11 +24,11 @@ use linera_sdk::{
 };
 use log::info;
 
-use self::state::GenNft;
+use self::state::GenNftState;
 use crate::model::ModelContext;
 
 pub struct GenNftService {
-    state: Arc<GenNft>,
+    state: Arc<GenNftState>,
     runtime: Arc<Mutex<ServiceRuntime<Self>>>,
 }
 
@@ -42,7 +42,7 @@ impl Service for GenNftService {
     type Parameters = ();
 
     async fn new(runtime: ServiceRuntime<Self>) -> Self {
-        let state = GenNft::load(runtime.root_view_storage_context())
+        let state = GenNftState::load(runtime.root_view_storage_context())
             .await
             .expect("Failed to load state");
         GenNftService {
@@ -67,7 +67,7 @@ impl Service for GenNftService {
 }
 
 struct QueryRoot {
-    non_fungible_token: Arc<GenNft>,
+    non_fungible_token: Arc<GenNftState>,
 }
 
 #[Object]
@@ -94,6 +94,7 @@ impl QueryRoot {
         self.non_fungible_token
             .nfts
             .for_each_index_value(|_token_id, nft| {
+                let nft = nft.into_owned();
                 let nft_output = NftOutput::new(nft);
                 nfts.insert(nft_output.token_id.clone(), nft_output);
                 Ok(())
@@ -121,6 +122,7 @@ impl QueryRoot {
         self.non_fungible_token
             .owned_token_ids
             .for_each_index_value(|owner, token_ids| {
+                let token_ids = token_ids.into_owned();
                 let new_token_ids = token_ids
                     .into_iter()
                     .map(|token_id| STANDARD_NO_PAD.encode(token_id.id))

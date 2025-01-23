@@ -3,7 +3,7 @@
 
 //! Implements [`crate::store::KeyValueStore`] for the IndexedDB Web database.
 
-use std::{fmt::Debug, rc::Rc};
+use std::rc::Rc;
 
 use futures::future;
 use indexed_db_futures::{js_sys, prelude::*, web_sys};

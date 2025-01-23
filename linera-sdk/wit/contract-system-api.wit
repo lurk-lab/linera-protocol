@@ -12,15 +12,16 @@ interface contract-system-api {
     message-is-bouncing: func() -> option<bool>;
     authenticated-caller-id: func() -> option<application-id>;
     read-chain-balance: func() -> amount;
-    read-owner-balance: func(owner: owner) -> amount;
+    read-owner-balance: func(owner: account-owner) -> amount;
     send-message: func(message: send-message-request);
     subscribe: func(chain: chain-id, channel: channel-name);
     unsubscribe: func(chain: chain-id, channel: channel-name);
-    transfer: func(source: option<owner>, destination: account, amount: amount);
+    transfer: func(source: option<account-owner>, destination: account, amount: amount);
     claim: func(source: account, destination: account, amount: amount);
     get-chain-ownership: func() -> chain-ownership;
     open-chain: func(chain-ownership: chain-ownership, application-permissions: application-permissions, balance: amount) -> tuple<message-id, chain-id>;
     close-chain: func() -> result<tuple<>, close-chain-error>;
+    create-application: func(bytecode-id: bytecode-id, parameters: list<u8>, argument: list<u8>, required-application-ids: list<application-id>) -> application-id;
     try-call-application: func(authenticated: bool, callee-id: application-id, argument: list<u8>) -> list<u8>;
     emit: func(name: stream-name, key: list<u8>, value: list<u8>);
     query-service: func(application-id: application-id, query: list<u8>) -> list<u8>;
@@ -34,7 +35,12 @@ interface contract-system-api {
 
     record account {
         chain-id: chain-id,
-        owner: option<owner>,
+        owner: option<account-owner>,
+    }
+
+    variant account-owner {
+        user(owner),
+        application(application-id),
     }
 
     record amount {
@@ -66,8 +72,8 @@ interface contract-system-api {
     }
 
     record chain-ownership {
-        super-owners: list<tuple<owner, public-key>>,
-        owners: list<tuple<owner, tuple<public-key, u64>>>,
+        super-owners: list<owner>,
+        owners: list<tuple<owner, u64>>,
         multi-leader-rounds: u32,
         timeout-config: timeout-config,
     }
@@ -108,13 +114,6 @@ interface contract-system-api {
 
     record owner {
         inner0: crypto-hash,
-    }
-
-    record public-key {
-        part1: u64,
-        part2: u64,
-        part3: u64,
-        part4: u64,
     }
 
     record resources {

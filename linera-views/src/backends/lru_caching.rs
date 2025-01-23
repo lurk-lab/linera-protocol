@@ -173,9 +173,11 @@ where
                 }
             }
         }
-        let key_results = self.store.contains_keys(key_requests).await?;
-        for (index, result) in indices.into_iter().zip(key_results) {
-            results[index] = result;
+        if !key_requests.is_empty() {
+            let key_results = self.store.contains_keys(key_requests).await?;
+            for (index, result) in indices.into_iter().zip(key_results) {
+                results[index] = result;
+            }
         }
         Ok(results)
     }
@@ -207,17 +209,19 @@ where
                 }
             }
         }
-        let values = self
-            .store
-            .read_multi_values_bytes(miss_keys.clone())
-            .await?;
-        let mut lru_read_values = lru_read_values.lock().unwrap();
-        for (i, (key, value)) in cache_miss_indices
-            .into_iter()
-            .zip(miss_keys.into_iter().zip(values))
-        {
-            lru_read_values.insert(key, value.clone());
-            result[i] = value;
+        if !miss_keys.is_empty() {
+            let values = self
+                .store
+                .read_multi_values_bytes(miss_keys.clone())
+                .await?;
+            let mut lru_read_values = lru_read_values.lock().unwrap();
+            for (i, (key, value)) in cache_miss_indices
+                .into_iter()
+                .zip(miss_keys.into_iter().zip(values))
+            {
+                lru_read_values.insert(key, value.clone());
+                result[i] = value;
+            }
         }
         Ok(result)
     }
@@ -271,7 +275,7 @@ where
 }
 
 /// The configuration type for the `LruCachingStore`.
-pub struct LruSplittingConfig<C> {
+pub struct LruCachingConfig<C> {
     /// The inner configuration of the `LruCachingStore`.
     pub inner_config: C,
     /// The cache size being used
@@ -282,10 +286,10 @@ impl<K> AdminKeyValueStore for LruCachingStore<K>
 where
     K: AdminKeyValueStore + Send + Sync,
 {
-    type Config = LruSplittingConfig<K::Config>;
+    type Config = LruCachingConfig<K::Config>;
 
     fn get_name() -> String {
-        format!("lru splitting {}", K::get_name())
+        format!("lru caching {}", K::get_name())
     }
 
     async fn connect(
@@ -330,10 +334,10 @@ impl<K> TestKeyValueStore for LruCachingStore<K>
 where
     K: TestKeyValueStore + Send + Sync,
 {
-    async fn new_test_config() -> Result<LruSplittingConfig<K::Config>, K::Error> {
+    async fn new_test_config() -> Result<LruCachingConfig<K::Config>, K::Error> {
         let inner_config = K::new_test_config().await?;
         let cache_size = TEST_CACHE_SIZE;
-        Ok(LruSplittingConfig {
+        Ok(LruCachingConfig {
             inner_config,
             cache_size,
         })

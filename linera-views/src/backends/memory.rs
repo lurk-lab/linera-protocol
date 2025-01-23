@@ -5,7 +5,6 @@
 
 use std::{
     collections::BTreeMap,
-    fmt::Debug,
     sync::{Arc, LazyLock, Mutex, RwLock},
 };
 

@@ -41,6 +41,14 @@ type HasherOutput = generic_array::GenericArray<u8, HasherOutputSize>;
 #[cfg_attr(with_testing, derive(Default))]
 pub struct CryptoHash(HasherOutput);
 
+/// A vector of cryptographic hashes.
+/// This is used to represent a hash of a list of hashes.
+#[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Hash, Serialize, Deserialize)]
+#[cfg_attr(with_testing, derive(Default))]
+pub struct CryptoHashVec(pub Vec<CryptoHash>);
+
+impl<'de> BcsHashable<'de> for CryptoHashVec {}
+
 /// A signature value.
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub struct Signature(pub dalek::Signature);
@@ -374,18 +382,18 @@ pub trait HasTypeName {
 /// Activate the blanket implementation of `Hashable` based on serde and BCS.
 /// * We use `serde_name` to extract a seed from the name of structs and enums.
 /// * We use `BCS` to generate canonical bytes suitable for hashing.
-pub trait BcsHashable: Serialize + serde::de::DeserializeOwned {}
+pub trait BcsHashable<'de>: Serialize + Deserialize<'de> {}
 
 /// Activate the blanket implementation of `Signable` based on serde and BCS.
 /// * We use `serde_name` to extract a seed from the name of structs and enums.
 /// * We use `BCS` to generate canonical bytes suitable for signing.
-pub trait BcsSignable: Serialize + serde::de::DeserializeOwned {}
+pub trait BcsSignable<'de>: Serialize + Deserialize<'de> {}
 
-impl<T: BcsSignable> BcsHashable for T {}
+impl<'de, T: BcsSignable<'de>> BcsHashable<'de> for T {}
 
-impl<T, Hasher> Hashable<Hasher> for T
+impl<'de, T, Hasher> Hashable<Hasher> for T
 where
-    T: BcsHashable,
+    T: BcsHashable<'de>,
     Hasher: io::Write,
 {
     fn write(&self, hasher: &mut Hasher) {
@@ -405,9 +413,9 @@ where
     }
 }
 
-impl<T> HasTypeName for T
+impl<'de, T> HasTypeName for T
 where
-    T: BcsHashable,
+    T: BcsHashable<'de>,
 {
     fn type_name() -> &'static str {
         serde_name::trace_name::<Self>().expect("Self must be a struct or an enum")
@@ -416,7 +424,7 @@ where
 
 impl CryptoHash {
     /// Computes a hash.
-    pub fn new<T: BcsHashable>(value: &T) -> Self {
+    pub fn new<'de, T: BcsHashable<'de>>(value: &T) -> Self {
         use sha3::digest::Digest;
 
         let mut hasher = sha3::Sha3_256::default();
@@ -438,9 +446,9 @@ impl CryptoHash {
 
 impl Signature {
     /// Computes a signature.
-    pub fn new<T>(value: &T, secret: &KeyPair) -> Self
+    pub fn new<'de, T>(value: &T, secret: &KeyPair) -> Self
     where
-        T: BcsSignable,
+        T: BcsSignable<'de>,
     {
         let mut message = Vec::new();
         value.write(&mut message);
@@ -448,9 +456,13 @@ impl Signature {
         Signature(signature)
     }
 
-    fn check_internal<T>(&self, value: &T, author: PublicKey) -> Result<(), dalek::SignatureError>
+    fn check_internal<'de, T>(
+        &self,
+        value: &T,
+        author: PublicKey,
+    ) -> Result<(), dalek::SignatureError>
     where
-        T: BcsSignable,
+        T: BcsSignable<'de>,
     {
         let mut message = Vec::new();
         value.write(&mut message);
@@ -459,9 +471,9 @@ impl Signature {
     }
 
     /// Checks a signature.
-    pub fn check<T>(&self, value: &T, author: PublicKey) -> Result<(), CryptoError>
+    pub fn check<'de, T>(&self, value: &T, author: PublicKey) -> Result<(), CryptoError>
     where
-        T: BcsSignable + fmt::Debug,
+        T: BcsSignable<'de> + fmt::Debug,
     {
         self.check_internal(value, author)
             .map_err(|error| CryptoError::InvalidSignature {
@@ -471,13 +483,13 @@ impl Signature {
     }
 
     /// Checks an optional signature.
-    pub fn check_optional_signature<T>(
+    pub fn check_optional_signature<'de, T>(
         signature: Option<&Self>,
         value: &T,
         author: &PublicKey,
     ) -> Result<(), CryptoError>
     where
-        T: BcsSignable + fmt::Debug,
+        T: BcsSignable<'de> + fmt::Debug,
     {
         match signature {
             Some(sig) => sig.check(value, *author),
@@ -487,9 +499,12 @@ impl Signature {
         }
     }
 
-    fn verify_batch_internal<'a, T, I>(value: &'a T, votes: I) -> Result<(), dalek::SignatureError>
+    fn verify_batch_internal<'a, 'de, T, I>(
+        value: &'a T,
+        votes: I,
+    ) -> Result<(), dalek::SignatureError>
     where
-        T: BcsSignable,
+        T: BcsSignable<'de>,
         I: IntoIterator<Item = (&'a PublicKey, &'a Signature)>,
     {
         let mut msg = Vec::new();
@@ -506,9 +521,9 @@ impl Signature {
     }
 
     /// Verifies a batch of signatures.
-    pub fn verify_batch<'a, T, I>(value: &'a T, votes: I) -> Result<(), CryptoError>
+    pub fn verify_batch<'a, 'de, T, I>(value: &'a T, votes: I) -> Result<(), CryptoError>
     where
-        T: BcsSignable,
+        T: BcsSignable<'de>,
         I: IntoIterator<Item = (&'a PublicKey, &'a Signature)>,
     {
         Signature::verify_batch_internal(value, votes).map_err(|error| {
@@ -682,7 +697,7 @@ impl Arbitrary for CryptoHash {
     }
 }
 
-impl BcsHashable for PublicKey {}
+impl<'de> BcsHashable<'de> for PublicKey {}
 
 doc_scalar!(CryptoHash, "A Sha3-256 value");
 doc_scalar!(PublicKey, "A signature public key");
@@ -702,7 +717,7 @@ impl TestString {
 }
 
 #[cfg(with_testing)]
-impl BcsSignable for TestString {}
+impl<'de> BcsSignable<'de> for TestString {}
 
 #[cfg(with_getrandom)]
 #[test]
@@ -710,7 +725,7 @@ fn test_signatures() {
     #[derive(Debug, Serialize, Deserialize)]
     struct Foo(String);
 
-    impl BcsSignable for Foo {}
+    impl<'de> BcsSignable<'de> for Foo {}
 
     let key1 = KeyPair::generate();
     let addr1 = key1.public();

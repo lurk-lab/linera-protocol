@@ -34,15 +34,15 @@ use derive_more::Display;
 use js_sys::wasm_bindgen::JsValue;
 use linera_base::{
     abi::Abi,
-    crypto::CryptoHash,
+    crypto::{BcsHashable, CryptoHash},
     data_types::{
         Amount, ApplicationPermissions, ArithmeticError, Blob, BlockHeight, DecompressionError,
         Resources, SendMessageRequest, Timestamp, UserApplicationDescription,
     },
     doc_scalar, hex_debug,
     identifiers::{
-        Account, ApplicationId, BlobId, BytecodeId, ChainId, ChannelName, Destination,
-        GenericApplicationId, MessageId, Owner, StreamName, UserApplicationId,
+        Account, AccountOwner, ApplicationId, BlobId, BytecodeId, ChainId, ChannelName,
+        Destination, GenericApplicationId, MessageId, Owner, StreamName, UserApplicationId,
     },
     ownership::ChainOwnership,
     task,
@@ -201,8 +201,6 @@ pub enum ExecutionError {
     #[error(transparent)]
     WasmError(#[from] WasmExecutionError),
     #[error(transparent)]
-    JoinError(#[from] linera_base::task::Error),
-    #[error(transparent)]
     DecompressionError(#[from] DecompressionError),
     #[error("The given promise is invalid or was polled once already")]
     InvalidPromise,
@@ -221,6 +219,9 @@ pub enum ExecutionError {
     ServiceWriteAttempt,
     #[error("Failed to load bytecode from storage {0:?}")]
     ApplicationBytecodeNotFound(Box<UserApplicationDescription>),
+    // TODO(#2927): support dynamic loading of modules on the Web
+    #[error("Unsupported dynamic application load: {0:?}")]
+    UnsupportedDynamicApplicationLoad(Box<UserApplicationId>),
 
     #[error("Excessive number of bytes read from storage")]
     ExcessiveRead,
@@ -264,7 +265,10 @@ pub enum ExecutionError {
     // and enforced limits for all oracles.
     #[error("Unstable oracles are disabled on this network.")]
     UnstableOracle,
-
+    #[error("Failed to send contract code to worker thread: {0:?}")]
+    ContractModuleSend(#[from] linera_base::task::SendError<UserContractCode>),
+    #[error("Failed to send service code to worker thread: {0:?}")]
+    ServiceModuleSend(#[from] linera_base::task::SendError<UserServiceCode>),
     #[error("Blobs not found: {0:?}")]
     BlobsNotFound(Vec<BlobId>),
 }
@@ -349,7 +353,8 @@ pub struct ExecutionRuntimeConfig {}
 
 /// Requirements for the `extra` field in our state views (and notably the
 /// [`ExecutionStateView`]).
-#[async_trait]
+#[cfg_attr(not(web), async_trait)]
+#[cfg_attr(web, async_trait(?Send))]
 pub trait ExecutionRuntimeContext {
     fn chain_id(&self) -> ChainId;
 
@@ -372,6 +377,12 @@ pub trait ExecutionRuntimeContext {
     async fn get_blob(&self, blob_id: BlobId) -> Result<Blob, ViewError>;
 
     async fn contains_blob(&self, blob_id: BlobId) -> Result<bool, ViewError>;
+
+    #[cfg(with_testing)]
+    async fn add_blobs(
+        &self,
+        blobs: impl IntoIterator<Item = Blob> + Send,
+    ) -> Result<(), ViewError>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -465,13 +476,13 @@ pub trait BaseRuntime {
     fn read_chain_balance(&mut self) -> Result<Amount, ExecutionError>;
 
     /// Reads the owner balance.
-    fn read_owner_balance(&mut self, owner: Owner) -> Result<Amount, ExecutionError>;
+    fn read_owner_balance(&mut self, owner: AccountOwner) -> Result<Amount, ExecutionError>;
 
     /// Reads the balances from all owners.
-    fn read_owner_balances(&mut self) -> Result<Vec<(Owner, Amount)>, ExecutionError>;
+    fn read_owner_balances(&mut self) -> Result<Vec<(AccountOwner, Amount)>, ExecutionError>;
 
     /// Reads balance owners.
-    fn read_balance_owners(&mut self) -> Result<Vec<Owner>, ExecutionError>;
+    fn read_balance_owners(&mut self) -> Result<Vec<AccountOwner>, ExecutionError>;
 
     /// Reads the current ownership configuration for this chain.
     fn chain_ownership(&mut self) -> Result<ChainOwnership, ExecutionError>;
@@ -607,7 +618,7 @@ pub trait BaseRuntime {
     /// owner, not a super owner.
     fn assert_before(&mut self, timestamp: Timestamp) -> Result<(), ExecutionError>;
 
-    /// Reads a data blob content specified by a given hash.
+    /// Reads a data blob specified by a given hash.
     fn read_data_blob(&mut self, hash: &CryptoHash) -> Result<Vec<u8>, ExecutionError>;
 
     /// Asserts the existence of a data blob with the given hash.
@@ -663,7 +674,7 @@ pub trait ContractRuntime: BaseRuntime {
     /// Transfers amount from source to destination.
     fn transfer(
         &mut self,
-        source: Option<Owner>,
+        source: Option<AccountOwner>,
         destination: Account,
         amount: Amount,
     ) -> Result<(), ExecutionError>;
@@ -704,6 +715,15 @@ pub trait ContractRuntime: BaseRuntime {
     /// Closes the current chain.
     fn close_chain(&mut self) -> Result<(), ExecutionError>;
 
+    /// Creates a new application on chain.
+    fn create_application(
+        &mut self,
+        bytecode_id: BytecodeId,
+        parameters: Vec<u8>,
+        argument: Vec<u8>,
+        required_application_ids: Vec<UserApplicationId>,
+    ) -> Result<UserApplicationId, ExecutionError>;
+
     /// Writes a batch of changes.
     fn write_batch(&mut self, batch: Batch) -> Result<(), ExecutionError>;
 }
@@ -721,6 +741,8 @@ pub enum Operation {
         bytes: Vec<u8>,
     },
 }
+
+impl<'de> BcsHashable<'de> for Operation {}
 
 /// A message to be sent and possibly executed in the receiver's block.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
@@ -961,7 +983,7 @@ impl OperationContext {
     fn refund_grant_to(&self) -> Option<Account> {
         Some(Account {
             chain_id: self.chain_id,
-            owner: self.authenticated_signer,
+            owner: self.authenticated_signer.map(AccountOwner::User),
         })
     }
 
@@ -993,12 +1015,6 @@ impl TestExecutionRuntimeContext {
             user_contracts: Arc::default(),
             user_services: Arc::default(),
             blobs: Arc::default(),
-        }
-    }
-
-    pub fn add_blobs(&self, blobs: Vec<Blob>) {
-        for blob in blobs {
-            self.blobs.insert(blob.id(), blob);
         }
     }
 }
@@ -1062,6 +1078,18 @@ impl ExecutionRuntimeContext for TestExecutionRuntimeContext {
     async fn contains_blob(&self, blob_id: BlobId) -> Result<bool, ViewError> {
         Ok(self.blobs.contains_key(&blob_id))
     }
+
+    #[cfg(with_testing)]
+    async fn add_blobs(
+        &self,
+        blobs: impl IntoIterator<Item = Blob> + Send,
+    ) -> Result<(), ViewError> {
+        for blob in blobs {
+            self.blobs.insert(blob.id(), blob);
+        }
+
+        Ok(())
+    }
 }
 
 impl From<SystemOperation> for Operation {
@@ -1075,15 +1103,23 @@ impl Operation {
         Operation::System(operation)
     }
 
+    /// Creates a new user application operation following the `application_id`'s [`Abi`].
     pub fn user<A: Abi>(
         application_id: UserApplicationId<A>,
         operation: &A::Operation,
     ) -> Result<Self, bcs::Error> {
-        let application_id = application_id.forget_abi();
-        let bytes = bcs::to_bytes(&operation)?;
+        Self::user_without_abi(application_id.forget_abi(), operation)
+    }
+
+    /// Creates a new user application operation assuming that the `operation` is valid for the
+    /// `application_id`.
+    pub fn user_without_abi(
+        application_id: UserApplicationId<()>,
+        operation: &impl Serialize,
+    ) -> Result<Self, bcs::Error> {
         Ok(Operation::User {
             application_id,
-            bytes,
+            bytes: bcs::to_bytes(&operation)?,
         })
     }
 
@@ -1106,7 +1142,9 @@ impl Message {
         Message::System(message)
     }
 
-    pub fn user<A: Abi, M: Serialize>(
+    /// Creates a new user application message assuming that the `message` is valid for the
+    /// `application_id`.
+    pub fn user<A, M: Serialize>(
         application_id: UserApplicationId<A>,
         message: &M,
     ) -> Result<Self, bcs::Error> {
@@ -1170,15 +1208,23 @@ impl Query {
         Query::System(query)
     }
 
+    /// Creates a new user application query following the `application_id`'s [`Abi`].
     pub fn user<A: Abi>(
         application_id: UserApplicationId<A>,
         query: &A::Query,
     ) -> Result<Self, serde_json::Error> {
-        let application_id = application_id.forget_abi();
-        let bytes = serde_json::to_vec(&query)?;
+        Self::user_without_abi(application_id.forget_abi(), query)
+    }
+
+    /// Creates a new user application query assuming that the `query` is valid for the
+    /// `application_id`.
+    pub fn user_without_abi(
+        application_id: UserApplicationId<()>,
+        query: &impl Serialize,
+    ) -> Result<Self, serde_json::Error> {
         Ok(Query::User {
             application_id,
-            bytes,
+            bytes: serde_json::to_vec(&query)?,
         })
     }
 

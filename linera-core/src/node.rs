@@ -9,12 +9,15 @@ use futures::stream::LocalBoxStream as BoxStream;
 use futures::stream::Stream;
 use linera_base::{
     crypto::{CryptoError, CryptoHash},
-    data_types::{ArithmeticError, Blob, BlobContent, BlockHeight},
+    data_types::{ArithmeticError, BlobContent, BlockHeight},
     identifiers::{BlobId, ChainId},
 };
 use linera_chain::{
     data_types::{BlockProposal, Origin},
-    types::{Certificate, HashedCertificateValue, LiteCertificate},
+    types::{
+        ConfirmedBlock, ConfirmedBlockCertificate, GenericCertificate, LiteCertificate, Timeout,
+        ValidatedBlock,
+    },
     ChainError,
 };
 use linera_execution::{
@@ -64,12 +67,23 @@ pub trait ValidatorNode {
         delivery: CrossChainMessageDelivery,
     ) -> Result<ChainInfoResponse, NodeError>;
 
-    /// Processes a certificate.
-    async fn handle_certificate(
+    /// Processes a confirmed certificate.
+    async fn handle_confirmed_certificate(
         &self,
-        certificate: Certificate,
-        blobs: Vec<Blob>,
+        certificate: GenericCertificate<ConfirmedBlock>,
         delivery: CrossChainMessageDelivery,
+    ) -> Result<ChainInfoResponse, NodeError>;
+
+    /// Processes a validated certificate.
+    async fn handle_validated_certificate(
+        &self,
+        certificate: GenericCertificate<ValidatedBlock>,
+    ) -> Result<ChainInfoResponse, NodeError>;
+
+    /// Processes a timeout certificate.
+    async fn handle_timeout_certificate(
+        &self,
+        certificate: GenericCertificate<Timeout>,
     ) -> Result<ChainInfoResponse, NodeError>;
 
     /// Handles information queries for this chain.
@@ -87,20 +101,37 @@ pub trait ValidatorNode {
     /// Subscribes to receiving notifications for a collection of chains.
     async fn subscribe(&self, chains: Vec<ChainId>) -> Result<Self::NotificationStream, NodeError>;
 
-    async fn download_blob_content(&self, blob_id: BlobId) -> Result<BlobContent, NodeError>;
+    // Uploads a blob. Returns an error if the validator has not seen a
+    // certificate using this blob.
+    async fn upload_blob(&self, content: BlobContent) -> Result<BlobId, NodeError>;
 
-    async fn download_certificate_value(
+    /// Downloads a blob. Returns an error if the validator does not have the blob.
+    async fn download_blob(&self, blob_id: BlobId) -> Result<BlobContent, NodeError>;
+
+    /// Downloads a blob that belongs to a pending proposal or the locked block on a chain.
+    async fn download_pending_blob(
+        &self,
+        chain_id: ChainId,
+        blob_id: BlobId,
+    ) -> Result<BlobContent, NodeError>;
+
+    /// Handles a blob that belongs to a pending proposal or validated block certificate.
+    async fn handle_pending_blob(
+        &self,
+        chain_id: ChainId,
+        blob: BlobContent,
+    ) -> Result<ChainInfoResponse, NodeError>;
+
+    async fn download_certificate(
         &self,
         hash: CryptoHash,
-    ) -> Result<HashedCertificateValue, NodeError>;
-
-    async fn download_certificate(&self, hash: CryptoHash) -> Result<Certificate, NodeError>;
+    ) -> Result<ConfirmedBlockCertificate, NodeError>;
 
     /// Requests a batch of certificates from the validator.
     async fn download_certificates(
         &self,
         hashes: Vec<CryptoHash>,
-    ) -> Result<Vec<Certificate>, NodeError>;
+    ) -> Result<Vec<ConfirmedBlockCertificate>, NodeError>;
 
     /// Returns the hash of the `Certificate` that last used a blob.
     async fn blob_last_used_by(&self, blob_id: BlobId) -> Result<CryptoHash, NodeError>;
@@ -188,6 +219,9 @@ pub enum NodeError {
     #[error("We don't have the value for the certificate.")]
     MissingCertificateValue,
 
+    #[error("Response doesn't contain requested ceritifcates: {0:?}")]
+    MissingCertificates(Vec<CryptoHash>),
+
     #[error("Validator's response to block proposal failed to include a vote")]
     MissingVoteInValidatorResponse,
 
@@ -224,6 +258,8 @@ pub enum NodeError {
     DuplicatesInBlobsNotFound,
     #[error("Node returned a BlobsNotFound error with unexpected blob IDs")]
     UnexpectedEntriesInBlobsNotFound,
+    #[error("Node returned a BlobsNotFound error with an empty list of missing blob IDs")]
+    EmptyBlobsNotFound,
     #[error("Local error handling validator response")]
     ResponseHandlingError { error: String },
 }

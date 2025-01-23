@@ -1,12 +1,9 @@
 // Copyright (c) Zefchain Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::{vec_deque::IterMut, VecDeque};
 #[cfg(with_metrics)]
 use std::sync::LazyLock;
-use std::{
-    collections::{vec_deque::IterMut, VecDeque},
-    fmt::Debug,
-};
 
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -72,7 +69,7 @@ impl StoredIndices {
 /// and the new_back_values are the ones accessed by the front operation.
 /// If position is not trivial, then the first index is the relevant
 /// bucket for the front and the second index is the position in the index.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct Cursor {
     position: Option<(usize, usize)>,
 }
@@ -93,7 +90,7 @@ impl Cursor {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Bucket<T> {
     Loaded { data: Vec<T> },
     NotLoaded { length: usize },

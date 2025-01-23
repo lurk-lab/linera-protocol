@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use counter::CounterAbi;
 use linera_base::{
     data_types::{Amount, BlockHeight, Timestamp},
     identifiers::{Account, ChainDescription, ChainId},
@@ -64,9 +63,8 @@ async fn test_fuel_for_counter_wasm_application(
 
     view.context()
         .extra()
-        .add_blobs(vec![contract_blob, service_blob]);
-
-    let app_id = app_id.with_abi::<CounterAbi>();
+        .add_blobs([contract_blob, service_blob])
+        .await?;
 
     let context = OperationContext {
         chain_id: ChainId::root(0),
@@ -97,7 +95,7 @@ async fn test_fuel_for_counter_wasm_application(
         view.execute_operation(
             context,
             Timestamp::from(0),
-            Operation::user(app_id, increment).unwrap(),
+            Operation::user_without_abi(app_id, increment).unwrap(),
             &mut txn_tracker,
             &mut controller,
         )
@@ -139,7 +137,7 @@ async fn test_fuel_for_counter_wasm_application(
     let Response::User(serialized_value) = view
         .query_application(
             context,
-            Query::user(app_id, &request).unwrap(),
+            Query::user_without_abi(app_id, &request).unwrap(),
             Some(&mut service_runtime_endpoint),
         )
         .await?

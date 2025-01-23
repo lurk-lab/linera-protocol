@@ -23,7 +23,7 @@ async fn hex_game() {
         .add_block(|block| {
             let operation = Operation::Start {
                 board_size: 2,
-                players: [key_pair1.public(), key_pair2.public()],
+                players: [key_pair1.public().into(), key_pair2.public().into()],
                 fee_budget: Amount::ZERO,
                 timeouts: None,
             };
@@ -31,8 +31,8 @@ async fn hex_game() {
         })
         .await;
 
-    let executed_block = certificate.inner().executed_block().unwrap();
-    let message_id = executed_block.message_id_for_operation(0, 0).unwrap();
+    let block = certificate.inner().block();
+    let message_id = block.message_id_for_operation(0, 0).unwrap();
     let description = ChainDescription::Child(message_id);
     let mut chain = ActiveChain::new(key_pair1.copy(), description, validator);
 
@@ -97,7 +97,7 @@ async fn hex_game_clock() {
         .add_block(|block| {
             let operation = Operation::Start {
                 board_size: 2,
-                players: [key_pair1.public(), key_pair2.public()],
+                players: [key_pair1.public().into(), key_pair2.public().into()],
                 fee_budget: Amount::ZERO,
                 timeouts: None,
             };
@@ -105,8 +105,8 @@ async fn hex_game_clock() {
         })
         .await;
 
-    let executed_block = certificate.inner().executed_block().unwrap();
-    let message_id = executed_block.message_id_for_operation(0, 0).unwrap();
+    let block = certificate.inner().block();
+    let message_id = block.message_id_for_operation(0, 0).unwrap();
     let description = ChainDescription::Child(message_id);
     let mut chain = ActiveChain::new(key_pair1.copy(), description, validator.clone());
 

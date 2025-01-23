@@ -12,14 +12,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dashmap::{mapref::entry::Entry, DashMap};
 use linera_base::{
-    crypto::{CryptoHash, PublicKey},
+    crypto::CryptoHash,
     data_types::{Amount, Blob, BlockHeight, TimeDelta, Timestamp, UserApplicationDescription},
-    identifiers::{BlobId, ChainDescription, ChainId, GenericApplicationId, UserApplicationId},
+    hashed::Hashed,
+    identifiers::{
+        BlobId, ChainDescription, ChainId, GenericApplicationId, Owner, UserApplicationId,
+    },
     ownership::ChainOwnership,
 };
 use linera_chain::{
     data_types::ChannelFullName,
-    types::{ConfirmedBlockCertificate, HashedCertificateValue},
+    types::{ConfirmedBlock, ConfirmedBlockCertificate},
     ChainError, ChainStateView,
 };
 use linera_execution::{
@@ -43,11 +46,12 @@ pub use crate::db_storage::TestClock;
 pub use crate::db_storage::{ChainStatesFirstAssignment, DbStorage, WallClock};
 #[cfg(with_metrics)]
 pub use crate::db_storage::{
-    READ_CERTIFICATE_COUNTER, READ_HASHED_CERTIFICATE_VALUE_COUNTER, WRITE_CERTIFICATE_COUNTER,
+    READ_CERTIFICATE_COUNTER, READ_HASHED_CONFIRMED_BLOCK_COUNTER, WRITE_CERTIFICATE_COUNTER,
 };
 
 /// Communicate with a persistent storage using the "views" abstraction.
-#[async_trait]
+#[cfg_attr(not(web), async_trait)]
+#[cfg_attr(web, async_trait(?Send))]
 pub trait Storage: Sized {
     /// The low-level storage implementation in use.
     type Context: Context<Extra = ChainRuntimeContext<Self>> + Clone + Send + Sync + 'static;
@@ -81,10 +85,10 @@ pub trait Storage: Sized {
     async fn contains_blob_state(&self, blob_id: BlobId) -> Result<bool, ViewError>;
 
     /// Reads the hashed certificate value with the given hash.
-    async fn read_hashed_certificate_value(
+    async fn read_hashed_confirmed_block(
         &self,
         hash: CryptoHash,
-    ) -> Result<HashedCertificateValue, ViewError>;
+    ) -> Result<Hashed<ConfirmedBlock>, ViewError>;
 
     /// Reads the blob with the given blob ID.
     async fn read_blob(&self, blob_id: BlobId) -> Result<Blob, ViewError>;
@@ -99,11 +103,11 @@ pub trait Storage: Sized {
     async fn read_blob_states(&self, blob_ids: &[BlobId]) -> Result<Vec<BlobState>, ViewError>;
 
     /// Reads the hashed certificate values in descending order from the given hash.
-    async fn read_hashed_certificate_values_downward(
+    async fn read_hashed_confirmed_blocks_downward(
         &self,
         from: CryptoHash,
         limit: u32,
-    ) -> Result<Vec<HashedCertificateValue>, ViewError>;
+    ) -> Result<Vec<Hashed<ConfirmedBlock>>, ViewError>;
 
     /// Writes the given blob.
     async fn write_blob(&self, blob: &Blob) -> Result<(), ViewError>;
@@ -122,6 +126,10 @@ pub trait Storage: Sized {
         blob_state: &BlobState,
     ) -> Result<(), ViewError>;
 
+    /// Writes the given blobs, but only if they already have a blob state. Returns `true` for the
+    /// blobs that were written.
+    async fn maybe_write_blobs(&self, blobs: &[Blob]) -> Result<Vec<bool>, ViewError>;
+
     /// Attempts to write the given blob state. Returns the latest `Epoch` to have used this blob.
     async fn maybe_write_blob_state(
         &self,
@@ -134,6 +142,7 @@ pub trait Storage: Sized {
         &self,
         blob_ids: &[BlobId],
         blob_state: BlobState,
+        overwrite: bool,
     ) -> Result<Vec<Epoch>, ViewError>;
 
     /// Writes several blobs.
@@ -191,7 +200,7 @@ pub trait Storage: Sized {
         committee: Committee,
         admin_id: ChainId,
         description: ChainDescription,
-        public_key: PublicKey,
+        owner: Owner,
         balance: Amount,
         timestamp: Timestamp,
     ) -> Result<(), ChainError>
@@ -201,8 +210,8 @@ pub trait Storage: Sized {
         let id = description.into();
         let mut chain = self.load_chain(id).await?;
         assert!(!chain.is_active(), "Attempting to create a chain twice");
-        chain.manager.get_mut().reset(
-            &ChainOwnership::single(public_key),
+        chain.manager.reset(
+            ChainOwnership::single(owner),
             BlockHeight(0),
             self.clock().current_time(),
             committee.keys_and_weights(),
@@ -215,9 +224,7 @@ pub trait Storage: Sized {
             .committees
             .get_mut()
             .insert(Epoch::ZERO, committee);
-        system_state
-            .ownership
-            .set(ChainOwnership::single(public_key));
+        system_state.ownership.set(ChainOwnership::single(owner));
         system_state.balance.set(balance);
         system_state.timestamp.set(timestamp);
 
@@ -264,11 +271,15 @@ pub trait Storage: Sized {
         );
         let contract_blob = self.read_blob(contract_bytecode_blob_id).await?;
         let compressed_contract_bytecode = CompressedBytecode {
-            compressed_bytes: contract_blob.inner_bytes(),
+            compressed_bytes: contract_blob.into_bytes().to_vec(),
         };
         let contract_bytecode =
-            linera_base::task::spawn_blocking(move || compressed_contract_bytecode.decompress())
-                .await??;
+            linera_base::task::Blocking::<linera_base::task::NoInput, _>::spawn(
+                move |_| async move { compressed_contract_bytecode.decompress() },
+            )
+            .await
+            .join()
+            .await?;
         Ok(WasmContractModule::new(contract_bytecode, wasm_runtime)
             .await?
             .into())
@@ -303,11 +314,14 @@ pub trait Storage: Sized {
         );
         let service_blob = self.read_blob(service_bytecode_blob_id).await?;
         let compressed_service_bytecode = CompressedBytecode {
-            compressed_bytes: service_blob.inner_bytes(),
+            compressed_bytes: service_blob.into_bytes().to_vec(),
         };
-        let service_bytecode =
-            linera_base::task::spawn_blocking(move || compressed_service_bytecode.decompress())
-                .await??;
+        let service_bytecode = linera_base::task::Blocking::<linera_base::task::NoInput, _>::spawn(
+            move |_| async move { compressed_service_bytecode.decompress() },
+        )
+        .await
+        .join()
+        .await?;
         Ok(WasmServiceModule::new(service_bytecode, wasm_runtime)
             .await?
             .into())
@@ -336,7 +350,8 @@ pub struct ChainRuntimeContext<S> {
     user_services: Arc<DashMap<UserApplicationId, UserServiceCode>>,
 }
 
-#[async_trait]
+#[cfg_attr(not(web), async_trait)]
+#[cfg_attr(web, async_trait(?Send))]
 impl<S> ExecutionRuntimeContext for ChainRuntimeContext<S>
 where
     S: Storage + Send + Sync,
@@ -392,10 +407,20 @@ where
     async fn contains_blob(&self, blob_id: BlobId) -> Result<bool, ViewError> {
         self.storage.contains_blob(blob_id).await
     }
+
+    #[cfg(with_testing)]
+    async fn add_blobs(
+        &self,
+        blobs: impl IntoIterator<Item = Blob> + Send,
+    ) -> Result<(), ViewError> {
+        let blobs = Vec::from_iter(blobs);
+        self.storage.write_blobs(&blobs).await
+    }
 }
 
 /// A clock that can be used to get the current `Timestamp`.
-#[async_trait]
+#[cfg_attr(not(web), async_trait)]
+#[cfg_attr(web, async_trait(?Send))]
 pub trait Clock {
     fn current_time(&self) -> Timestamp;
 

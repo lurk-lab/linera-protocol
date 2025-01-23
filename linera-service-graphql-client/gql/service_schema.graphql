@@ -4,6 +4,11 @@ An account
 scalar Account
 
 """
+An owner of an account.
+"""
+scalar AccountOwner
+
+"""
 A non-negative amount of tokens.
 """
 scalar Amount
@@ -41,23 +46,38 @@ input ApplicationPermissions {
 }
 
 """
-A block containing operations to apply on a given chain, as well as the
-acknowledgment of a number of incoming messages from other chains.
-* Incoming messages must be selected in the order they were
-produced by the sending chain, but can be skipped.
-* When a block is proposed to a validator, all cross-chain messages must have been
-received ahead of time in the inbox of the chain.
-* This constraint does not apply to the execution of confirmed blocks.
+A blob of binary data, with its content-addressed blob ID.
+"""
+scalar Blob
+
+"""
+A content-addressed blob ID i.e. the hash of the `BlobContent`
+"""
+scalar BlobId
+
+"""
+Block defines the atomic unit of growth of the Linera chain.
+
+As part of the block body, contains all the incoming messages
+and operations to execute which define a state transition of the chain.
+Resulting messages produced by the operations are also included in the block body,
+together with oracle responses and events.
 """
 type Block {
 	"""
-	The chain to which this block belongs.
+	Header of the block containing metadata of the block.
 	"""
-	chainId: ChainId!
+	header: BlockHeader!
 	"""
-	The number identifying the current configuration.
+	Body of the block containing all of the data.
 	"""
-	epoch: Epoch!
+	body: BlockBody!
+}
+
+"""
+The body of a block containing all the data included in the block.
+"""
+type BlockBody {
 	"""
 	A selection of incoming messages to be executed first. Successive messages of same
 	sender and height are grouped together for conciseness.
@@ -68,40 +88,9 @@ type Block {
 	"""
 	operations: [Operation!]!
 	"""
-	The block height.
-	"""
-	height: BlockHeight!
-	"""
-	The timestamp when this block was created. This must be later than all messages received
-	in this block, but no later than the current time.
-	"""
-	timestamp: Timestamp!
-	"""
-	The user signing for the operations in the block and paying for their execution
-	fees. If set, this must be the `owner` in the block proposal. `None` means that
-	the default account of the chain is used. This value is also used as recipient of
-	potential refunds for the message grants created by the operations.
-	"""
-	authenticatedSigner: Owner
-	"""
-	Certified hash (see `Certificate` below) of the previous block in the
-	chain, if any.
-	"""
-	previousBlockHash: CryptoHash
-}
-
-"""
-The messages and the state hash resulting from a [`Block`]'s execution.
-"""
-type BlockExecutionOutcome {
-	"""
 	The list of outgoing messages for each transaction.
 	"""
 	messages: [[OutgoingMessage!]!]!
-	"""
-	The hash of the chain's execution state after this block.
-	"""
-	stateHash: CryptoHash!
 	"""
 	The record of oracle responses for each transaction.
 	"""
@@ -110,6 +99,65 @@ type BlockExecutionOutcome {
 	The list of events produced by each transaction.
 	"""
 	events: [[EventRecord!]!]!
+}
+
+"""
+Succinct representation of a block.
+Contains all the metadata to follow the chain of blocks or verifying
+inclusion (event, message, oracle response, etc.) in the block's body.
+"""
+type BlockHeader {
+	"""
+	The chain to which this block belongs.
+	"""
+	chainId: ChainId!
+	"""
+	The number identifying the current configuration.
+	"""
+	epoch: Epoch!
+	"""
+	The block height.
+	"""
+	height: BlockHeight!
+	"""
+	The timestamp when this block was created.
+	"""
+	timestamp: Timestamp!
+	"""
+	The hash of the chain's execution state after this block.
+	"""
+	stateHash: CryptoHash!
+	"""
+	Certified hash of the previous block in the chain, if any.
+	"""
+	previousBlockHash: CryptoHash
+	"""
+	The user signing for the operations in the block and paying for their execution
+	fees. If set, this must be the `owner` in the block proposal. `None` means that
+	the default account of the chain is used. This value is also used as recipient of
+	potential refunds for the message grants created by the operations.
+	"""
+	authenticatedSigner: Owner
+	"""
+	Cryptographic hash of all the incoming bundles in the block.
+	"""
+	bundlesHash: CryptoHash!
+	"""
+	Cryptographic hash of all the operations in the block.
+	"""
+	operationsHash: CryptoHash!
+	"""
+	Cryptographic hash of all the messages in the block.
+	"""
+	messagesHash: CryptoHash!
+	"""
+	Cryptographic hash of all the oracle responses in the block.
+	"""
+	oracleResponsesHash: CryptoHash!
+	"""
+	Cryptographic hash of all the events in the block.
+	"""
+	eventsHash: CryptoHash!
 }
 
 """
@@ -142,11 +190,6 @@ A unique identifier for an application bytecode
 """
 scalar BytecodeId
 
-type CertificateValue {
-	executedBlock: ExecutedBlock
-	status: String!
-}
-
 """
 A chain ID with a block height.
 """
@@ -166,9 +209,39 @@ The unique identifier (UID) of a chain. This is currently computed as the hash v
 scalar ChainId
 
 """
-The state of the certification process for a chain's next block
+The state of the certification process for a chain's next block.
 """
-scalar ChainManager
+type ChainManager {
+	"""
+	The public keys, weights and types of the chain's owners.
+	"""
+	ownership: ChainOwnership!
+	"""
+	The seed for the pseudo-random number generator that determines the round leaders.
+	"""
+	seed: Int!
+	"""
+	These are blobs published or read by the locked block.
+	"""
+	lockedBlobs: MapView_BlobId_Blob_3711e760!
+	"""
+	The time after which we are ready to sign a timeout certificate for the current round.
+	"""
+	roundTimeout: Timestamp
+	"""
+	The owners that take over in fallback mode.
+	"""
+	fallbackOwners: JSONObject!
+	"""
+	Returns the lowest round where we can still vote to validate or confirm a block. This is
+	the round to which the timeout applies.
+	
+	Having a leader timeout certificate in any given round causes the next one to become
+	current. Seeing a validated block certificate or a valid proposal in any round causes that
+	round to become current, unless a higher one already is.
+	"""
+	currentRound: Round!
+}
 
 """
 Represents the owner(s) of a chain
@@ -194,6 +267,10 @@ type ChainStateExtendedView {
 	"""
 	manager: ChainManager!
 	"""
+	The incomplete set of blobs for the pending validated block.
+	"""
+	pendingValidatedBlobs: MapView_BlobId_Blob_9f0b41f3!
+	"""
 	Hashes of all certified blocks for this sender.
 	This ends with `block_hash` and has length `usize::from(next_block_height)`.
 	"""
@@ -202,6 +279,10 @@ type ChainStateExtendedView {
 	Sender chain and height of all certified blocks known as a receiver (local ordering).
 	"""
 	receivedLog: LogView_ChainAndHeight_7af83576!
+	"""
+	The number of `received_log` entries we have synchronized, for each validator.
+	"""
+	receivedCertificateTrackers: JSONObject!
 	"""
 	Mailboxes used to receive messages indexed by their origin.
 	"""
@@ -324,6 +405,11 @@ input Committee {
 	policy: ResourceControlPolicy!
 }
 
+type ConfirmedBlock {
+	block: Block!
+	status: String!
+}
+
 """
 The version of the Linera crates used in this build
 """
@@ -347,6 +433,30 @@ scalar Destination
 """
 A GraphQL-visible map item, complete with key.
 """
+type Entry_AccountOwner_Amount_aaf96548 {
+	key: AccountOwner!
+	value: Amount
+}
+
+"""
+A GraphQL-visible map item, complete with key.
+"""
+type Entry_BlobId_Blob_50b95aa1 {
+	key: BlobId!
+	value: Blob
+}
+
+"""
+A GraphQL-visible map item, complete with key.
+"""
+type Entry_BlobId_Blob_9f0b41f3 {
+	key: BlobId!
+	value: Blob
+}
+
+"""
+A GraphQL-visible map item, complete with key.
+"""
 type Entry_ChannelFullName_ChannelStateView_ef52a064 {
 	key: ChannelFullName!
 	value: ChannelStateView!
@@ -358,14 +468,6 @@ A GraphQL-visible map item, complete with key.
 type Entry_Origin_InboxStateView_c4db01d6 {
 	key: Origin!
 	value: InboxStateView!
-}
-
-"""
-A GraphQL-visible map item, complete with key.
-"""
-type Entry_Owner_Amount_202623bd {
-	key: Owner!
-	value: Amount
 }
 
 """
@@ -399,14 +501,6 @@ type EventRecord {
 	value: [Int!]!
 }
 
-"""
-A [`Block`], together with the outcome from its execution.
-"""
-type ExecutedBlock {
-	block: Block!
-	outcome: BlockExecutionOutcome!
-}
-
 type ExecutionStateView {
 	system: SystemExecutionStateView!
 }
@@ -417,9 +511,9 @@ A unique identifier for a user application or for the system application
 """
 scalar GenericApplicationId
 
-type HashedCertificateValue {
+type HashedConfirmedBlock {
 	hash: CryptoHash!
-	value: CertificateValue!
+	value: ConfirmedBlock!
 }
 
 
@@ -493,6 +587,14 @@ type LogView_CryptoHash_5f6ab77f {
 	entries(start: Int, end: Int): [CryptoHash!]!
 }
 
+input MapFilters_AccountOwner_d6668c53 {
+	keys: [AccountOwner!]
+}
+
+input MapFilters_BlobId_4d2a0555 {
+	keys: [BlobId!]
+}
+
 input MapFilters_ChannelFullName_3b59bf69 {
 	keys: [ChannelFullName!]
 }
@@ -501,12 +603,16 @@ input MapFilters_Origin_742d451b {
 	keys: [Origin!]
 }
 
-input MapFilters_Owner_6898ce22 {
-	keys: [Owner!]
-}
-
 input MapFilters_Target_7aac1e1c {
 	keys: [Target!]
+}
+
+input MapInput_AccountOwner_d6668c53 {
+	filters: MapFilters_AccountOwner_d6668c53
+}
+
+input MapInput_BlobId_4d2a0555 {
+	filters: MapFilters_BlobId_4d2a0555
 }
 
 input MapInput_ChannelFullName_3b59bf69 {
@@ -517,18 +623,26 @@ input MapInput_Origin_742d451b {
 	filters: MapFilters_Origin_742d451b
 }
 
-input MapInput_Owner_6898ce22 {
-	filters: MapFilters_Owner_6898ce22
-}
-
 input MapInput_Target_7aac1e1c {
 	filters: MapFilters_Target_7aac1e1c
 }
 
-type MapView_Owner_Amount_ef5edbab {
-	keys(count: Int): [Owner!]!
-	entry(key: Owner!): Entry_Owner_Amount_202623bd!
-	entries(input: MapInput_Owner_6898ce22): [Entry_Owner_Amount_202623bd!]!
+type MapView_AccountOwner_Amount_11ef1379 {
+	keys(count: Int): [AccountOwner!]!
+	entry(key: AccountOwner!): Entry_AccountOwner_Amount_aaf96548!
+	entries(input: MapInput_AccountOwner_d6668c53): [Entry_AccountOwner_Amount_aaf96548!]!
+}
+
+type MapView_BlobId_Blob_3711e760 {
+	keys(count: Int): [BlobId!]!
+	entry(key: BlobId!): Entry_BlobId_Blob_9f0b41f3!
+	entries(input: MapInput_BlobId_4d2a0555): [Entry_BlobId_Blob_9f0b41f3!]!
+}
+
+type MapView_BlobId_Blob_9f0b41f3 {
+	keys(count: Int): [BlobId!]!
+	entry(key: BlobId!): Entry_BlobId_Blob_50b95aa1!
+	entries(input: MapInput_BlobId_4d2a0555): [Entry_BlobId_Blob_50b95aa1!]!
 }
 
 """
@@ -597,15 +711,15 @@ type MutationRoot {
 	"""
 	readDataBlob(chainId: ChainId!, hash: CryptoHash!): CryptoHash!
 	"""
-	Creates (or activates) a new chain by installing the given authentication key.
+	Creates (or activates) a new chain with the given owner.
 	This will automatically subscribe to the future committees created by `admin_id`.
 	"""
-	openChain(chainId: ChainId!, publicKey: PublicKey!, balance: Amount): ChainId!
+	openChain(chainId: ChainId!, owner: Owner!, balance: Amount): ChainId!
 	"""
 	Creates (or activates) a new chain by installing the given authentication keys.
 	This will automatically subscribe to the future committees created by `admin_id`.
 	"""
-	openMultiOwnerChain(		chainId: ChainId!,		applicationPermissions: ApplicationPermissions,		publicKeys: [PublicKey!]!,		weights: [Int!],		multiLeaderRounds: Int,		balance: Amount,
+	openMultiOwnerChain(		chainId: ChainId!,		applicationPermissions: ApplicationPermissions,		owners: [Owner!]!,		weights: [Int!],		multiLeaderRounds: Int,		balance: Amount,
 		"""
 		The duration of the fast round, in milliseconds; default: no timeout
 		"""
@@ -624,17 +738,17 @@ type MutationRoot {
 		fallbackDurationMs: Int! = 86400000
 	): ChainId!
 	"""
-	Closes the chain.
+	Closes the chain. Returns `None` if it was already closed.
 	"""
-	closeChain(chainId: ChainId!): CryptoHash!
-	"""
-	Changes the authentication key of the chain.
-	"""
-	changeOwner(chainId: ChainId!, newPublicKey: PublicKey!): CryptoHash!
+	closeChain(chainId: ChainId!): CryptoHash
 	"""
 	Changes the authentication key of the chain.
 	"""
-	changeMultipleOwners(		chainId: ChainId!,		newPublicKeys: [PublicKey!]!,		newWeights: [Int!]!,		multiLeaderRounds: Int!,
+	changeOwner(chainId: ChainId!, newOwner: Owner!): CryptoHash!
+	"""
+	Changes the authentication key of the chain.
+	"""
+	changeMultipleOwners(		chainId: ChainId!,		newOwners: [Owner!]!,		newWeights: [Int!]!,		multiLeaderRounds: Int!,
 		"""
 		The duration of the fast round, in milliseconds; default: no timeout
 		"""
@@ -801,17 +915,12 @@ type PostedMessage {
 	message: Message!
 }
 
-"""
-A signature public key
-"""
-scalar PublicKey
-
 type QueryRoot {
 	chain(chainId: ChainId!): ChainStateExtendedView!
 	applications(chainId: ChainId!): [ApplicationOverview!]!
 	chains: Chains!
-	block(hash: CryptoHash, chainId: ChainId!): HashedCertificateValue
-	blocks(from: CryptoHash, chainId: ChainId!, limit: Int): [HashedCertificateValue!]!
+	block(hash: CryptoHash, chainId: ChainId!): HashedConfirmedBlock
+	blocks(from: CryptoHash, chainId: ChainId!, limit: Int): [HashedConfirmedBlock!]!
 	"""
 	Returns the version information on this node service.
 	"""
@@ -933,6 +1042,11 @@ input ResourceControlPolicy {
 }
 
 """
+A number to identify successive attempts to decide a value in a consensus protocol.
+"""
+scalar Round
+
+"""
 An event stream ID.
 """
 type StreamId {
@@ -977,7 +1091,7 @@ type SystemExecutionStateView {
 	committees: JSONObject!
 	ownership: ChainOwnership!
 	balance: Amount!
-	balances: MapView_Owner_Amount_ef5edbab!
+	balances: MapView_AccountOwner_Amount_11ef1379!
 	timestamp: Timestamp!
 }
 

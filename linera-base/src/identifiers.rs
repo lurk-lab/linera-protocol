@@ -19,7 +19,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::{
     bcs_scalar,
     crypto::{BcsHashable, CryptoError, CryptoHash, PublicKey},
-    data_types::{BlobContent, BlockHeight},
+    data_types::BlockHeight,
     doc_scalar, hex_debug,
 };
 
@@ -30,7 +30,8 @@ use crate::{
 pub struct Owner(pub CryptoHash);
 
 /// An account owner.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, WitLoad, WitStore, WitType)]
+#[cfg_attr(with_testing, derive(test_strategy::Arbitrary))]
 pub enum AccountOwner {
     /// An account owned by a user.
     User(Owner),
@@ -47,11 +48,11 @@ pub struct Account {
     pub chain_id: ChainId,
     /// The owner of the account, or `None` for the chain balance.
     #[debug(skip_if = Option::is_none)]
-    pub owner: Option<Owner>,
+    pub owner: Option<AccountOwner>,
 }
 
 impl Account {
-    /// Creates an Account with a ChainId
+    /// Creates an [`Account`] representing the balance shared by a chain's owners.
     pub fn chain(chain_id: ChainId) -> Self {
         Account {
             chain_id,
@@ -59,11 +60,11 @@ impl Account {
         }
     }
 
-    /// Creates an Account with a ChainId and an Owner
-    pub fn owner(chain_id: ChainId, owner: Owner) -> Self {
+    /// Creates an [`Account`] for a specific [`Owner`] on a chain.
+    pub fn owner(chain_id: ChainId, owner: impl Into<AccountOwner>) -> Self {
         Account {
             chain_id,
-            owner: Some(owner),
+            owner: Some(owner.into()),
         }
     }
 }
@@ -80,18 +81,21 @@ impl Display for Account {
 impl FromStr for Account {
     type Err = anyhow::Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = s.split(':').collect::<Vec<_>>();
-        anyhow::ensure!(
-            parts.len() <= 2,
-            "Expecting format `chain-id:address` or `chain-id`"
-        );
-        if parts.len() == 1 {
-            Ok(Account::chain(s.parse()?))
-        } else {
-            let chain_id = parts[0].parse()?;
-            let owner = parts[1].parse()?;
+    fn from_str(string: &str) -> Result<Self, Self::Err> {
+        let mut parts = string.splitn(2, ':');
+
+        let chain_id = parts
+            .next()
+            .context(
+                "Expecting an account formatted as `chain-id` or `chain-id:owner-type:address`",
+            )?
+            .parse()?;
+
+        if let Some(owner_string) = parts.next() {
+            let owner = owner_string.parse::<AccountOwner>()?;
             Ok(Account::owner(chain_id, owner))
+        } else {
+            Ok(Account::chain(chain_id))
         }
     }
 }
@@ -155,9 +159,9 @@ pub enum BlobType {
     /// A generic data blob.
     #[default]
     Data,
-    /// A blob containing contract bytecode.
+    /// A blob containing compressed contract bytecode.
     ContractBytecode,
-    /// A blob containing service bytecode.
+    /// A blob containing compressed service bytecode.
     ServiceBytecode,
 }
 
@@ -178,35 +182,17 @@ impl FromStr for BlobType {
     }
 }
 
-impl From<&BlobContent> for BlobType {
-    fn from(content: &BlobContent) -> Self {
-        match content {
-            BlobContent::Data(_) => BlobType::Data,
-            BlobContent::ContractBytecode(_) => BlobType::ContractBytecode,
-            BlobContent::ServiceBytecode(_) => BlobType::ServiceBytecode,
-        }
-    }
-}
-
 /// A content-addressed blob ID i.e. the hash of the `BlobContent`.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy, Hash, Debug, WitType, WitStore, WitLoad)]
 #[cfg_attr(with_testing, derive(test_strategy::Arbitrary, Default))]
 pub struct BlobId {
-    /// The hash of the blob.
-    pub hash: CryptoHash,
     /// The type of the blob.
     pub blob_type: BlobType,
+    /// The hash of the blob.
+    pub hash: CryptoHash,
 }
 
 impl BlobId {
-    /// Creates a new `BlobId` from a `BlobContent`
-    pub fn from_content(content: &BlobContent) -> Self {
-        Self {
-            hash: CryptoHash::new(&content.blob_bytes()),
-            blob_type: content.into(),
-        }
-    }
-
     /// Creates a new `BlobId` from a `CryptoHash`. This must be a hash of the blob's bytes!
     pub fn new(hash: CryptoHash, blob_type: BlobType) -> Self {
         Self { hash, blob_type }
@@ -292,7 +278,7 @@ impl<'a> Deserialize<'a> for BlobId {
     WitStore,
     WitType,
 )]
-#[cfg_attr(with_testing, derive(Default))]
+#[cfg_attr(with_testing, derive(Default, test_strategy::Arbitrary))]
 pub struct MessageId {
     /// The chain ID that created the message.
     pub chain_id: ChainId,
@@ -304,7 +290,7 @@ pub struct MessageId {
 
 /// A unique identifier for a user application.
 #[derive(Debug, WitLoad, WitStore, WitType)]
-#[cfg_attr(with_testing, derive(Default))]
+#[cfg_attr(with_testing, derive(Default, test_strategy::Arbitrary))]
 pub struct ApplicationId<A = ()> {
     /// The bytecode to use for the application.
     pub bytecode_id: BytecodeId<A>,
@@ -358,7 +344,7 @@ impl From<ApplicationId> for GenericApplicationId {
 
 /// A unique identifier for an application bytecode.
 #[derive(Debug, WitLoad, WitStore, WitType)]
-#[cfg_attr(with_testing, derive(Default))]
+#[cfg_attr(with_testing, derive(Default, test_strategy::Arbitrary))]
 pub struct BytecodeId<Abi = (), Parameters = (), InstantiationArgument = ()> {
     /// The hash of the blob containing the contract bytecode.
     pub contract_blob_hash: CryptoHash,
@@ -994,7 +980,7 @@ impl ChainId {
     }
 }
 
-impl BcsHashable for ChainDescription {}
+impl<'de> BcsHashable<'de> for ChainDescription {}
 
 bcs_scalar!(ApplicationId, "A unique identifier for a user application");
 doc_scalar!(

@@ -2,21 +2,19 @@
 // Copyright (c) Zefchain Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use linera_base::{
     crypto::{CryptoHash, KeyPair, PublicKey},
     data_types::{Blob, BlockHeight, Timestamp},
+    ensure,
     identifiers::{BlobId, Owner},
     ownership::ChainOwnership,
 };
-use linera_chain::data_types::Block;
-use linera_execution::committee::ValidatorName;
+use linera_chain::data_types::ProposedBlock;
 use tokio::sync::Mutex;
 
+use super::ChainClientError;
 use crate::data_types::ChainInfo;
 
 /// The state of our interaction with a particular chain: how far we have synchronized it and
@@ -32,13 +30,10 @@ pub struct ChainClientState {
     /// The block we are currently trying to propose for the next height, if any.
     ///
     /// This is always at the same height as `next_block_height`.
-    pending_block: Option<Block>,
+    pending_proposal: Option<ProposedBlock>,
     /// Known key pairs from present and past identities.
     known_key_pairs: BTreeMap<Owner, KeyPair>,
 
-    /// For each validator, up to which index we have synchronized their
-    /// [`ChainStateView::received_log`].
-    received_certificate_trackers: HashMap<ValidatorName, u64>,
     /// This contains blobs belonging to our `pending_block` that may not even have
     /// been processed by (i.e. been proposed to) our own local chain manager yet.
     pending_blobs: BTreeMap<BlobId, Blob>,
@@ -54,7 +49,7 @@ impl ChainClientState {
         block_hash: Option<CryptoHash>,
         timestamp: Timestamp,
         next_block_height: BlockHeight,
-        pending_block: Option<Block>,
+        pending_block: Option<ProposedBlock>,
         pending_blobs: BTreeMap<BlobId, Blob>,
     ) -> ChainClientState {
         let known_key_pairs = known_key_pairs
@@ -66,13 +61,12 @@ impl ChainClientState {
             block_hash,
             timestamp,
             next_block_height,
-            pending_block: None,
+            pending_proposal: None,
             pending_blobs,
-            received_certificate_trackers: HashMap::new(),
             client_mutex: Arc::default(),
         };
         if let Some(block) = pending_block {
-            state.set_pending_block(block);
+            state.set_pending_proposal(block);
         }
         state
     }
@@ -89,13 +83,13 @@ impl ChainClientState {
         self.next_block_height
     }
 
-    pub fn pending_block(&self) -> &Option<Block> {
-        &self.pending_block
+    pub fn pending_proposal(&self) -> &Option<ProposedBlock> {
+        &self.pending_proposal
     }
 
-    pub(super) fn set_pending_block(&mut self, block: Block) {
+    pub(super) fn set_pending_proposal(&mut self, block: ProposedBlock) {
         if block.height == self.next_block_height {
-            self.pending_block = Some(block);
+            self.pending_proposal = Some(block);
         } else {
             tracing::error!(
                 "Not setting pending block at height {}, because next_block_height is {}.",
@@ -130,27 +124,6 @@ impl ChainClientState {
         new_public_key
     }
 
-    pub fn received_certificate_trackers(&self) -> &HashMap<ValidatorName, u64> {
-        &self.received_certificate_trackers
-    }
-
-    pub(super) fn update_received_certificate_tracker(
-        &mut self,
-        name: ValidatorName,
-        tracker: u64,
-    ) {
-        self.received_certificate_trackers
-            .entry(name)
-            .and_modify(|t| {
-                // Because several synchronizations could happen in parallel, we need to make
-                // sure to never go backward.
-                if tracker > *t {
-                    *t = tracker;
-                }
-            })
-            .or_insert(tracker);
-    }
-
     pub(super) fn update_from_info(&mut self, info: &ChainInfo) {
         if info.next_block_height > self.next_block_height {
             self.next_block_height = info.next_block_height;
@@ -161,11 +134,24 @@ impl ChainClientState {
     }
 
     pub(super) fn clear_pending_block(&mut self) {
-        self.pending_block = None;
+        self.pending_proposal = None;
         self.pending_blobs.clear();
     }
 
     pub(super) fn client_mutex(&self) -> Arc<Mutex<()>> {
         self.client_mutex.clone()
+    }
+
+    /// Returns an error if the chain info does not match the block hash and height.
+    pub(super) fn check_info_is_up_to_date(
+        &self,
+        info: &ChainInfo,
+    ) -> Result<(), ChainClientError> {
+        ensure!(
+            self.block_hash() == info.block_hash
+                && self.next_block_height() == info.next_block_height,
+            ChainClientError::BlockProposalError("The chain is not synchronized.")
+        );
+        Ok(())
     }
 }

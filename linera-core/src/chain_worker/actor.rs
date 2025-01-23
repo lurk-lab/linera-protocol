@@ -4,7 +4,7 @@
 //! An actor that runs a chain worker.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fmt,
     sync::{Arc, RwLock},
 };
@@ -13,18 +13,17 @@ use custom_debug_derive::Debug;
 use linera_base::{
     crypto::CryptoHash,
     data_types::{Blob, BlockHeight, Timestamp, UserApplicationDescription},
-    identifiers::{ChainId, UserApplicationId},
+    hashed::Hashed,
+    identifiers::{BlobId, ChainId, UserApplicationId},
 };
 use linera_chain::{
-    data_types::{Block, BlockProposal, ExecutedBlock, MessageBundle, Origin, Target},
-    types::{
-        ConfirmedBlock, ConfirmedBlockCertificate, Hashed, TimeoutCertificate, ValidatedBlock,
-        ValidatedBlockCertificate,
-    },
+    data_types::{BlockProposal, ExecutedBlock, MessageBundle, Origin, ProposedBlock, Target},
+    types::{Block, ConfirmedBlockCertificate, TimeoutCertificate, ValidatedBlockCertificate},
     ChainStateView,
 };
 use linera_execution::{
-    committee::Epoch, Query, QueryContext, Response, ServiceRuntimeEndpoint, ServiceSyncRuntime,
+    committee::{Epoch, ValidatorName},
+    Query, QueryContext, Response, ServiceRuntimeEndpoint, ServiceSyncRuntime,
 };
 use linera_storage::Storage;
 use tokio::sync::{mpsc, oneshot, OwnedRwLockReadGuard};
@@ -85,7 +84,7 @@ where
 
     /// Execute a block but discard any changes to the chain state.
     StageBlockExecution {
-        block: Block,
+        block: ProposedBlock,
         #[debug(skip)]
         callback: oneshot::Sender<Result<(ExecutedBlock, ChainInfoResponse), WorkerError>>,
     },
@@ -107,7 +106,6 @@ where
     /// Process a validated block issued for this multi-owner chain.
     ProcessValidatedBlock {
         certificate: ValidatedBlockCertificate,
-        blobs: Vec<Blob>,
         #[debug(skip)]
         callback: oneshot::Sender<Result<(ChainInfoResponse, NetworkActions, bool), WorkerError>>,
     },
@@ -115,7 +113,6 @@ where
     /// Process a confirmed block (a commit).
     ProcessConfirmedBlock {
         certificate: ConfirmedBlockCertificate,
-        blobs: Vec<Blob>,
         #[debug(with = "elide_option")]
         notify_when_messages_are_delivered: Option<oneshot::Sender<()>>,
         #[debug(skip)]
@@ -143,6 +140,26 @@ where
         #[debug(skip)]
         callback: oneshot::Sender<Result<(ChainInfoResponse, NetworkActions), WorkerError>>,
     },
+
+    /// Get a blob if it belongs to the current locked block or pending proposal.
+    DownloadPendingBlob {
+        blob_id: BlobId,
+        #[debug(skip)]
+        callback: oneshot::Sender<Result<Blob, WorkerError>>,
+    },
+
+    /// Handle a blob that belongs to a pending proposal or validated block certificate.
+    HandlePendingBlob {
+        blob: Blob,
+        #[debug(skip)]
+        callback: oneshot::Sender<Result<ChainInfoResponse, WorkerError>>,
+    },
+
+    /// Update the received certificate trackers to at least the given values.
+    UpdateReceivedCertificateTrackers {
+        new_trackers: BTreeMap<ValidatorName, u64>,
+        callback: oneshot::Sender<Result<(), WorkerError>>,
+    },
 }
 
 /// The actor worker type.
@@ -151,7 +168,7 @@ where
     StorageClient: Storage + Clone + Send + Sync + 'static,
 {
     worker: ChainWorkerState<StorageClient>,
-    service_runtime_thread: Option<linera_base::task::BlockingFuture<()>>,
+    service_runtime_thread: Option<linera_base::task::Blocking>,
 }
 
 impl<StorageClient> ChainWorkerActor<StorageClient>
@@ -163,15 +180,14 @@ where
     pub async fn load(
         config: ChainWorkerConfig,
         storage: StorageClient,
-        confirmed_value_cache: Arc<ValueCache<CryptoHash, Hashed<ConfirmedBlock>>>,
-        validated_value_cache: Arc<ValueCache<CryptoHash, Hashed<ValidatedBlock>>>,
+        executed_block_cache: Arc<ValueCache<CryptoHash, Hashed<Block>>>,
         tracked_chains: Option<Arc<RwLock<HashSet<ChainId>>>>,
         delivery_notifier: DeliveryNotifier,
         chain_id: ChainId,
     ) -> Result<Self, WorkerError> {
         let (service_runtime_thread, service_runtime_endpoint) = {
             if config.long_lived_services {
-                let (thread, endpoint) = Self::spawn_service_runtime_actor(chain_id);
+                let (thread, endpoint) = Self::spawn_service_runtime_actor(chain_id).await;
                 (Some(thread), Some(endpoint))
             } else {
                 (None, None)
@@ -181,8 +197,7 @@ where
         let worker = ChainWorkerState::load(
             config,
             storage,
-            confirmed_value_cache,
-            validated_value_cache,
+            executed_block_cache,
             tracked_chains,
             delivery_notifier,
             chain_id,
@@ -199,12 +214,9 @@ where
     /// Spawns a blocking task to execute the service runtime actor.
     ///
     /// Returns the task handle and the endpoints to interact with the actor.
-    fn spawn_service_runtime_actor(
+    async fn spawn_service_runtime_actor(
         chain_id: ChainId,
-    ) -> (
-        linera_base::task::BlockingFuture<()>,
-        ServiceRuntimeEndpoint,
-    ) {
+    ) -> (linera_base::task::Blocking, ServiceRuntimeEndpoint) {
         let context = QueryContext {
             chain_id,
             next_block_height: BlockHeight(0),
@@ -215,9 +227,10 @@ where
             futures::channel::mpsc::unbounded();
         let (runtime_request_sender, runtime_request_receiver) = std::sync::mpsc::channel();
 
-        let service_runtime_thread = linera_base::task::spawn_blocking(move || {
+        let service_runtime_thread = linera_base::task::Blocking::spawn(move |_| async move {
             ServiceSyncRuntime::new(execution_state_sender, context).run(runtime_request_receiver)
-        });
+        })
+        .await;
 
         let endpoint = ServiceRuntimeEndpoint {
             incoming_execution_requests,
@@ -288,18 +301,12 @@ where
                     .is_ok(),
                 ChainWorkerRequest::ProcessValidatedBlock {
                     certificate,
-                    blobs,
                     callback,
                 } => callback
-                    .send(
-                        self.worker
-                            .process_validated_block(certificate, &blobs)
-                            .await,
-                    )
+                    .send(self.worker.process_validated_block(certificate).await)
                     .is_ok(),
                 ChainWorkerRequest::ProcessConfirmedBlock {
                     certificate,
-                    blobs,
                     notify_when_messages_are_delivered,
                     callback,
                 } => callback
@@ -307,7 +314,6 @@ where
                         self.worker
                             .process_confirmed_block(
                                 certificate,
-                                &blobs,
                                 notify_when_messages_are_delivered,
                             )
                             .await,
@@ -333,6 +339,22 @@ where
                 ChainWorkerRequest::HandleChainInfoQuery { query, callback } => callback
                     .send(self.worker.handle_chain_info_query(query).await)
                     .is_ok(),
+                ChainWorkerRequest::DownloadPendingBlob { blob_id, callback } => callback
+                    .send(self.worker.download_pending_blob(blob_id).await)
+                    .is_ok(),
+                ChainWorkerRequest::HandlePendingBlob { blob, callback } => callback
+                    .send(self.worker.handle_pending_blob(blob).await)
+                    .is_ok(),
+                ChainWorkerRequest::UpdateReceivedCertificateTrackers {
+                    new_trackers,
+                    callback,
+                } => callback
+                    .send(
+                        self.worker
+                            .update_received_certificate_trackers(new_trackers)
+                            .await,
+                    )
+                    .is_ok(),
             };
 
             if !responded {
@@ -343,9 +365,7 @@ where
 
         if let Some(thread) = self.service_runtime_thread {
             drop(self.worker);
-            thread
-                .await
-                .expect("Service runtime thread should not panic");
+            thread.join().await
         }
 
         trace!("`ChainWorkerActor` finished");

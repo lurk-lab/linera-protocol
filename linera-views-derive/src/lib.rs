@@ -190,9 +190,13 @@ fn generate_view_code(input: ItemStruct, root: bool) -> TokenStream2 {
             async fn load(context: #context) -> Result<Self, linera_views::views::ViewError> {
                 use linera_views::context::Context as _;
                 #load_metrics
-                let keys = Self::pre_load(&context)?;
-                let values = context.read_multi_values_bytes(keys).await?;
-                Self::post_load(context, &values)
+                if Self::NUM_INIT_KEYS == 0 {
+                    Self::post_load(context, &[])
+                } else {
+                    let keys = Self::pre_load(&context)?;
+                    let values = context.read_multi_values_bytes(keys).await?;
+                    Self::post_load(context, &values)
+                }
             }
 
 
@@ -263,7 +267,9 @@ fn generate_save_delete_view_code(input: ItemStruct) -> TokenStream2 {
                 #increment_counter
                 let mut batch = Batch::new();
                 #(#flushes)*
-                self.context().write_batch(batch).await?;
+                if !batch.is_empty() {
+                    self.context().write_batch(batch).await?;
+                }
                 Ok(())
             }
         }
@@ -350,7 +356,7 @@ fn generate_crypto_hash_code(input: ItemStruct) -> TokenStream2 {
                 use serde::{Serialize, Deserialize};
                 #[derive(Serialize, Deserialize)]
                 struct #hash_type(GenericArray<u8, <Sha3_256 as OutputSizeUser>::OutputSize>);
-                impl BcsHashable for #hash_type {}
+                impl<'de> BcsHashable<'de> for #hash_type {}
                 let hash = self.hash().await?;
                 Ok(CryptoHash::new(&#hash_type(hash)))
             }
@@ -366,7 +372,7 @@ fn generate_crypto_hash_code(input: ItemStruct) -> TokenStream2 {
                 use serde::{Serialize, Deserialize};
                 #[derive(Serialize, Deserialize)]
                 struct #hash_type(GenericArray<u8, <Sha3_256 as OutputSizeUser>::OutputSize>);
-                impl BcsHashable for #hash_type {}
+                impl<'de> BcsHashable<'de> for #hash_type {}
                 let hash = self.hash_mut().await?;
                 Ok(CryptoHash::new(&#hash_type(hash)))
             }

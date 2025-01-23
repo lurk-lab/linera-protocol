@@ -8,13 +8,15 @@ use async_trait::async_trait;
 use futures::{sink::SinkExt, stream::StreamExt};
 use linera_base::{
     crypto::CryptoHash,
-    data_types::{Blob, BlobContent},
+    data_types::BlobContent,
     identifiers::{BlobId, ChainId},
     time::{timer, Duration},
 };
 use linera_chain::{
     data_types::BlockProposal,
-    types::{Certificate, CertificateValue, HashedCertificateValue, LiteCertificate},
+    types::{
+        ConfirmedBlockCertificate, LiteCertificate, TimeoutCertificate, ValidatedBlockCertificate,
+    },
 };
 use linera_core::{
     data_types::{ChainInfoQuery, ChainInfoResponse},
@@ -24,8 +26,9 @@ use linera_version::VersionInfo;
 
 use super::{codec, transport::TransportProtocol};
 use crate::{
-    config::ValidatorPublicNetworkPreConfig, mass_client, HandleCertificateRequest,
-    HandleLiteCertRequest, RpcMessage,
+    config::ValidatorPublicNetworkPreConfig, mass_client, HandleConfirmedCertificateRequest,
+    HandleLiteCertRequest, HandleTimeoutCertificateRequest, HandleValidatedCertificateRequest,
+    RpcMessage,
 };
 
 #[derive(Clone)]
@@ -80,7 +83,8 @@ impl ValidatorNode for SimpleClient {
         &self,
         proposal: BlockProposal,
     ) -> Result<ChainInfoResponse, NodeError> {
-        self.query(proposal.into()).await
+        let request = RpcMessage::BlockProposal(Box::new(proposal));
+        self.query(request).await
     }
 
     /// Processes a hash certificate.
@@ -90,27 +94,46 @@ impl ValidatorNode for SimpleClient {
         delivery: CrossChainMessageDelivery,
     ) -> Result<ChainInfoResponse, NodeError> {
         let wait_for_outgoing_messages = delivery.wait_for_outgoing_messages();
-        let request = HandleLiteCertRequest {
+        let request = RpcMessage::LiteCertificate(Box::new(HandleLiteCertRequest {
             certificate: certificate.cloned(),
             wait_for_outgoing_messages,
-        };
-        self.query(request.into()).await
+        }));
+        self.query(request).await
     }
 
-    /// Processes a certificate.
-    async fn handle_certificate(
+    /// Processes a validated certificate.
+    async fn handle_validated_certificate(
         &self,
-        certificate: Certificate,
-        blobs: Vec<Blob>,
+        certificate: ValidatedBlockCertificate,
+    ) -> Result<ChainInfoResponse, NodeError> {
+        let request = HandleValidatedCertificateRequest { certificate };
+        let request = RpcMessage::ValidatedCertificate(Box::new(request));
+        self.query(request).await
+    }
+
+    /// Processes a confirmed certificate.
+    async fn handle_confirmed_certificate(
+        &self,
+        certificate: ConfirmedBlockCertificate,
         delivery: CrossChainMessageDelivery,
     ) -> Result<ChainInfoResponse, NodeError> {
         let wait_for_outgoing_messages = delivery.wait_for_outgoing_messages();
-        let request = HandleCertificateRequest {
+        let request = HandleConfirmedCertificateRequest {
             certificate,
-            blobs,
             wait_for_outgoing_messages,
         };
-        self.query(request.into()).await
+        let request = RpcMessage::ConfirmedCertificate(Box::new(request));
+        self.query(request).await
+    }
+
+    /// Processes a timeout certificate.
+    async fn handle_timeout_certificate(
+        &self,
+        certificate: TimeoutCertificate,
+    ) -> Result<ChainInfoResponse, NodeError> {
+        let request = HandleTimeoutCertificateRequest { certificate };
+        let request = RpcMessage::TimeoutCertificate(Box::new(request));
+        self.query(request).await
     }
 
     /// Handles information queries for this chain.
@@ -118,7 +141,8 @@ impl ValidatorNode for SimpleClient {
         &self,
         query: ChainInfoQuery,
     ) -> Result<ChainInfoResponse, NodeError> {
-        self.query(query.into()).await
+        let request = RpcMessage::ChainInfoQuery(Box::new(query));
+        self.query(request).await
     }
 
     fn subscribe(
@@ -137,32 +161,66 @@ impl ValidatorNode for SimpleClient {
         self.query(RpcMessage::GenesisConfigHashQuery).await
     }
 
-    async fn download_blob_content(&self, blob_id: BlobId) -> Result<BlobContent, NodeError> {
-        self.query(RpcMessage::DownloadBlobContent(Box::new(blob_id)))
+    async fn upload_blob(&self, content: BlobContent) -> Result<BlobId, NodeError> {
+        self.query(RpcMessage::UploadBlob(Box::new(content))).await
+    }
+
+    async fn download_blob(&self, blob_id: BlobId) -> Result<BlobContent, NodeError> {
+        self.query(RpcMessage::DownloadBlob(Box::new(blob_id)))
             .await
     }
 
-    async fn download_certificate_value(
+    async fn download_pending_blob(
+        &self,
+        chain_id: ChainId,
+        blob_id: BlobId,
+    ) -> Result<BlobContent, NodeError> {
+        self.query(RpcMessage::DownloadPendingBlob(Box::new((
+            chain_id, blob_id,
+        ))))
+        .await
+    }
+
+    async fn handle_pending_blob(
+        &self,
+        chain_id: ChainId,
+        blob: BlobContent,
+    ) -> Result<ChainInfoResponse, NodeError> {
+        self.query(RpcMessage::HandlePendingBlob(Box::new((chain_id, blob))))
+            .await
+    }
+
+    async fn download_certificate(
         &self,
         hash: CryptoHash,
-    ) -> Result<HashedCertificateValue, NodeError> {
-        let certificate_value: CertificateValue = self
-            .query(RpcMessage::DownloadCertificateValue(Box::new(hash)))
-            .await?;
-        Ok(certificate_value.with_hash_checked(hash)?)
-    }
-
-    async fn download_certificate(&self, hash: CryptoHash) -> Result<Certificate, NodeError> {
-        self.query(RpcMessage::DownloadCertificate(Box::new(hash)))
-            .await
+    ) -> Result<ConfirmedBlockCertificate, NodeError> {
+        Ok(self
+            .download_certificates(vec![hash])
+            .await?
+            .into_iter()
+            .next()
+            .unwrap()) // UNWRAP: We know there is exactly one certificate, otherwise we would have an error.
     }
 
     async fn download_certificates(
         &self,
         hashes: Vec<CryptoHash>,
-    ) -> Result<Vec<Certificate>, NodeError> {
-        self.query(RpcMessage::DownloadCertificates(Box::new(hashes)))
-            .await
+    ) -> Result<Vec<ConfirmedBlockCertificate>, NodeError> {
+        let certificates = self
+            .query::<Vec<ConfirmedBlockCertificate>>(RpcMessage::DownloadCertificates(
+                hashes.clone(),
+            ))
+            .await?;
+
+        if certificates.len() != hashes.len() {
+            let missing_hashes: Vec<CryptoHash> = hashes
+                .into_iter()
+                .filter(|hash| !certificates.iter().any(|cert| cert.hash() == *hash))
+                .collect();
+            Err(NodeError::MissingCertificates(missing_hashes))
+        } else {
+            Ok(certificates)
+        }
     }
 
     async fn blob_last_used_by(&self, blob_id: BlobId) -> Result<CryptoHash, NodeError> {
@@ -171,8 +229,7 @@ impl ValidatorNode for SimpleClient {
     }
 
     async fn missing_blob_ids(&self, blob_ids: Vec<BlobId>) -> Result<Vec<BlobId>, NodeError> {
-        self.query(RpcMessage::MissingBlobIds(Box::new(blob_ids)))
-            .await
+        self.query(RpcMessage::MissingBlobIds(blob_ids)).await
     }
 }
 

@@ -6,9 +6,10 @@ use std::{borrow::Cow, collections::BTreeSet};
 use linera_base::{
     crypto::CryptoHash,
     data_types::{Blob, BlockHeight},
+    hashed::Hashed,
     identifiers::{BlobId, ChainId},
 };
-use linera_chain::types::{CertificateValue, HashedCertificateValue, Timeout};
+use linera_chain::types::Timeout;
 use linera_execution::committee::Epoch;
 
 use super::{ValueCache, DEFAULT_VALUE_CACHE_SIZE};
@@ -16,7 +17,7 @@ use super::{ValueCache, DEFAULT_VALUE_CACHE_SIZE};
 /// Tests attempt to retrieve non-existent value.
 #[tokio::test]
 async fn test_retrieve_missing_value() {
-    let cache = ValueCache::<CryptoHash, HashedCertificateValue>::default();
+    let cache = ValueCache::<CryptoHash, Hashed<Timeout>>::default();
     let hash = CryptoHash::test_hash("Missing value");
 
     assert!(cache.get(&hash).await.is_none());
@@ -26,7 +27,7 @@ async fn test_retrieve_missing_value() {
 /// Tests inserting a certificate value in the cache.
 #[tokio::test]
 async fn test_insert_single_certificate_value() {
-    let cache = ValueCache::<CryptoHash, HashedCertificateValue>::default();
+    let cache = ValueCache::<CryptoHash, Hashed<Timeout>>::default();
     let value = create_dummy_certificate_value(0);
     let hash = value.hash();
 
@@ -52,7 +53,7 @@ async fn test_insert_single_blob() {
 /// Tests inserting many certificate values in the cache, one-by-one.
 #[tokio::test]
 async fn test_insert_many_certificate_values_individually() {
-    let cache = ValueCache::<CryptoHash, HashedCertificateValue>::default();
+    let cache = ValueCache::<CryptoHash, Hashed<Timeout>>::default();
     let values =
         create_dummy_certificate_values(0..(DEFAULT_VALUE_CACHE_SIZE as u64)).collect::<Vec<_>>();
 
@@ -67,7 +68,7 @@ async fn test_insert_many_certificate_values_individually() {
 
     assert_eq!(
         cache.keys::<BTreeSet<_>>().await,
-        BTreeSet::from_iter(values.iter().map(HashedCertificateValue::hash))
+        BTreeSet::from_iter(values.iter().map(Hashed::hash))
     );
 }
 
@@ -95,7 +96,7 @@ async fn test_insert_many_blobs_individually() {
 /// Tests inserting many values in the cache, all-at-once.
 #[tokio::test]
 async fn test_insert_many_values_together() {
-    let cache = ValueCache::<CryptoHash, HashedCertificateValue>::default();
+    let cache = ValueCache::<CryptoHash, Hashed<Timeout>>::default();
     let values =
         create_dummy_certificate_values(0..(DEFAULT_VALUE_CACHE_SIZE as u64)).collect::<Vec<_>>();
 
@@ -108,14 +109,14 @@ async fn test_insert_many_values_together() {
 
     assert_eq!(
         cache.keys::<BTreeSet<_>>().await,
-        BTreeSet::from_iter(values.iter().map(HashedCertificateValue::hash))
+        BTreeSet::from_iter(values.iter().map(|el| el.hash()))
     );
 }
 
 /// Tests re-inserting many values in the cache, all-at-once.
 #[tokio::test]
 async fn test_reinsertion_of_values() {
-    let cache = ValueCache::<CryptoHash, HashedCertificateValue>::default();
+    let cache = ValueCache::<CryptoHash, Hashed<Timeout>>::default();
     let values =
         create_dummy_certificate_values(0..(DEFAULT_VALUE_CACHE_SIZE as u64)).collect::<Vec<_>>();
 
@@ -132,14 +133,14 @@ async fn test_reinsertion_of_values() {
 
     assert_eq!(
         cache.keys::<BTreeSet<_>>().await,
-        BTreeSet::from_iter(values.iter().map(HashedCertificateValue::hash))
+        BTreeSet::from_iter(values.iter().map(Hashed::hash))
     );
 }
 
 /// Tests eviction of one entry.
 #[tokio::test]
 async fn test_one_eviction() {
-    let cache = ValueCache::<CryptoHash, HashedCertificateValue>::default();
+    let cache = ValueCache::<CryptoHash, Hashed<Timeout>>::default();
     let values =
         create_dummy_certificate_values(0..=(DEFAULT_VALUE_CACHE_SIZE as u64)).collect::<Vec<_>>();
 
@@ -155,14 +156,14 @@ async fn test_one_eviction() {
 
     assert_eq!(
         cache.keys::<BTreeSet<_>>().await,
-        BTreeSet::from_iter(values.iter().skip(1).map(HashedCertificateValue::hash))
+        BTreeSet::from_iter(values.iter().skip(1).map(Hashed::hash))
     );
 }
 
 /// Tests eviction of the second entry.
 #[tokio::test]
 async fn test_eviction_of_second_entry() {
-    let cache = ValueCache::<CryptoHash, HashedCertificateValue>::default();
+    let cache = ValueCache::<CryptoHash, Hashed<Timeout>>::default();
     let values =
         create_dummy_certificate_values(0..=(DEFAULT_VALUE_CACHE_SIZE as u64)).collect::<Vec<_>>();
 
@@ -201,7 +202,7 @@ async fn test_eviction_of_second_entry() {
             values
                 .iter()
                 .skip(2)
-                .map(HashedCertificateValue::hash)
+                .map(Hashed::hash)
                 .chain(Some(values[0].hash()))
         )
     );
@@ -210,7 +211,7 @@ async fn test_eviction_of_second_entry() {
 /// Tests if reinsertion of the first entry promotes it so that it's not evicted so soon.
 #[tokio::test]
 async fn test_promotion_of_reinsertion() {
-    let cache = ValueCache::<CryptoHash, HashedCertificateValue>::default();
+    let cache = ValueCache::<CryptoHash, Hashed<Timeout>>::default();
     let values =
         create_dummy_certificate_values(0..=(DEFAULT_VALUE_CACHE_SIZE as u64)).collect::<Vec<_>>();
 
@@ -249,7 +250,7 @@ async fn test_promotion_of_reinsertion() {
             values
                 .iter()
                 .skip(2)
-                .map(HashedCertificateValue::hash)
+                .map(Hashed::hash)
                 .chain(Some(values[0].hash()))
         )
     );
@@ -264,7 +265,7 @@ async fn test_filtering_out_cached_items() {
     let cached_values = create_dummy_certificate_values(3..7).collect::<Vec<_>>();
     let items = create_dummy_certificate_values(0..10).map(|value| DummyWrapper(value.hash()));
 
-    let cache = ValueCache::<CryptoHash, HashedCertificateValue>::default();
+    let cache = ValueCache::<CryptoHash, Hashed<Timeout>>::default();
     cache
         .insert_all(cached_values.iter().map(Cow::Borrowed))
         .await;
@@ -282,14 +283,14 @@ async fn test_filtering_out_cached_items() {
 
     assert_eq!(
         cache.keys::<BTreeSet<_>>().await,
-        BTreeSet::from_iter(cached_values.iter().map(HashedCertificateValue::hash))
+        BTreeSet::from_iter(cached_values.iter().map(|el| el.hash()))
     );
 }
 
-/// Creates multiple dummy [`HashedCertificateValue`]s to use in the tests.
+/// Creates multiple dummy [`Hashed<Timeout>`]s to use in the tests.
 fn create_dummy_certificate_values<Heights>(
     heights: Heights,
-) -> impl Iterator<Item = HashedCertificateValue>
+) -> impl Iterator<Item = Hashed<Timeout>>
 where
     Heights: IntoIterator,
     Heights::Item: Into<BlockHeight>,
@@ -306,14 +307,13 @@ fn create_dummy_blobs() -> Vec<Blob> {
     blobs
 }
 
-/// Creates a new dummy [`HashedCertificateValue`] to use in the tests.
-fn create_dummy_certificate_value(height: impl Into<BlockHeight>) -> HashedCertificateValue {
-    CertificateValue::Timeout(Timeout::new(
+/// Creates a new dummy [`Hashed<Timeout>`] to use in the tests.
+fn create_dummy_certificate_value(height: impl Into<BlockHeight>) -> Hashed<Timeout> {
+    Hashed::new(Timeout::new(
         ChainId(CryptoHash::test_hash("Fake chain ID")),
         height.into(),
         Epoch(0),
     ))
-    .into()
 }
 
 /// Creates a new dummy data [`Blob`] to use in the tests.

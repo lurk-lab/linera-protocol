@@ -1,6 +1,4 @@
-<!-- cargo-rdme start -->
-
-# Hex
+# Hex Game
 
 Hex is a game where player `One` tries to connect the left and right sides of the board and player
 `Two` tries to connect top to bottom. The board is rhombic and has a configurable side length `s`.
@@ -20,9 +18,9 @@ This implementation shows how to write a game that is played on a shared tempora
 Users make turns by submitting operations to the chain, not by sending messages, so a player
 does not have to wait for any other chain owner to accept any message.
 
-# Usage
+## Usage
 
-## Setting up
+### Setting up
 
 Make sure you have the `linera` binary in your `PATH`, and that it is compatible with your
 `linera-sdk` version.
@@ -49,7 +47,7 @@ explanation.
 CHAIN_1=e476187f6ddfeb9d588c7b45d3df334d5501d6499b3f9ad5595cae86cce16a65
 ```
 
-## Creating the Game Chain
+### Creating the Game Chain
 
 We open a new chain owned by both `$OWNER_1` and `$OWNER_2`, create the application on it, and
 start the node service.
@@ -63,8 +61,8 @@ APP_ID=$(linera -w0 --wait-for-outgoing-messages \
         \"blockDelay\": 100000000
     }")
 
-PUB_KEY_1=$(linera -w0 keygen)
-PUB_KEY_2=$(linera -w1 keygen)
+OWNER_1=$(linera -w0 keygen)
+OWNER_2=$(linera -w1 keygen)
 
 linera -w0 service --port 8080 &
 sleep 1
@@ -79,8 +77,8 @@ on the URL you get by running `echo "http://localhost:8080/chains/$CHAIN_1/appli
 mutation {
   start(
     players: [
-        "$PUB_KEY_1",
-        "$PUB_KEY_2"
+        "$OWNER_1",
+        "$OWNER_2"
     ],
     boardSize: 11,
     feeBudget: "1"
@@ -103,7 +101,7 @@ It contains the temporary chain's ID, and the ID of the message that created it:
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID
 query {
   gameChains {
-    entry(key: "$PUB_KEY_1") {
+    entry(key: "$OWNER_1") {
       value {
         messageId chainId
       }
@@ -122,15 +120,15 @@ kill %% && sleep 1    # Kill the service so we can use CLI commands for wallet 0
 HEX_CHAIN=$(echo "$QUERY_RESULT" | jq -r '.gameChains.entry.value[0].chainId')
 MESSAGE_ID=$(echo "$QUERY_RESULT" | jq -r '.gameChains.entry.value[0].messageId')
 
-linera -w0 assign --key $PUB_KEY_1 --message-id $MESSAGE_ID
-linera -w1 assign --key $PUB_KEY_2 --message-id $MESSAGE_ID
+linera -w0 assign --owner $OWNER_1 --message-id $MESSAGE_ID
+linera -w1 assign --owner $OWNER_2 --message-id $MESSAGE_ID
 
 linera -w0 service --port 8080 &
 linera -w1 service --port 8081 &
 sleep 1
 ```
 
-## Playing the Game
+### Playing the Game
 
 Now the first player can make a move by navigating to the URL you get by running `echo "http://localhost:8080/chains/$HEX_CHAIN/applications/$APP_ID"`:
 
@@ -143,5 +141,3 @@ And the second player player at the URL you get by running `echo "http://localho
 ```gql,uri=http://localhost:8081/chains/$HEX_CHAIN/applications/$APP_ID
 mutation { makeMove(x: 4, y: 5) }
 ```
-
-<!-- cargo-rdme end -->

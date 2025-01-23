@@ -3,7 +3,7 @@
 
 //! Unit tests for `linera-base` types.
 
-use std::{collections::BTreeMap, fmt::Debug};
+use std::fmt::Debug;
 
 use linera_witty::{Layout, WitLoad, WitStore};
 use test_case::test_case;
@@ -12,7 +12,8 @@ use crate::{
     crypto::{CryptoHash, PublicKey},
     data_types::{Amount, BlockHeight, Resources, SendMessageRequest, TimeDelta, Timestamp},
     identifiers::{
-        Account, ApplicationId, BytecodeId, ChainId, ChannelName, Destination, MessageId, Owner,
+        Account, AccountOwner, ApplicationId, BytecodeId, ChainId, ChannelName, Destination,
+        MessageId, Owner,
     },
     ownership::{ChainOwnership, TimeoutConfig},
 };
@@ -83,7 +84,7 @@ fn send_message_request_test_case() -> SendMessageRequest<Vec<u8>> {
 fn account_test_case() -> Account {
     Account {
         chain_id: ChainId::root(10),
-        owner: Some(Owner(CryptoHash::test_hash("account"))),
+        owner: Some(AccountOwner::User(Owner(CryptoHash::test_hash("account")))),
     }
 }
 
@@ -133,27 +134,13 @@ fn timeout_config_test_case() -> TimeoutConfig {
 fn chain_ownership_test_case() -> ChainOwnership {
     let super_owners = ["Alice", "Bob"]
         .into_iter()
-        .enumerate()
-        .map(|(index, owner_name)| {
-            (
-                Owner(CryptoHash::test_hash(owner_name)),
-                PublicKey::test_key(index as u8),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+        .map(|owner_name| Owner(CryptoHash::test_hash(owner_name)))
+        .collect();
 
     let owners = ["Carol", "Dennis", "Eve"]
         .into_iter()
         .enumerate()
-        .map(|(index, owner_name)| {
-            (
-                Owner(CryptoHash::test_hash(owner_name)),
-                (
-                    PublicKey::test_key((index + super_owners.len()) as u8),
-                    index as u64,
-                ),
-            )
-        })
+        .map(|(index, owner_name)| (Owner(CryptoHash::test_hash(owner_name)), index as u64))
         .collect();
 
     ChainOwnership {

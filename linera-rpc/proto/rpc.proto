@@ -22,11 +22,20 @@ service ValidatorWorker {
   // Process a certificate without value.
   rpc HandleLiteCertificate(LiteCertificate) returns (ChainInfoResult);
 
-  // Process a certificate.
-  rpc HandleCertificate(HandleCertificateRequest) returns (ChainInfoResult);
+  rpc HandleConfirmedCertificate(HandleConfirmedCertificateRequest) returns (ChainInfoResult);
+
+  rpc HandleValidatedCertificate(HandleValidatedCertificateRequest) returns (ChainInfoResult);
+
+  rpc HandleTimeoutCertificate(HandleTimeoutCertificateRequest) returns (ChainInfoResult);
 
   // Handle information queries for this chain.
   rpc HandleChainInfoQuery(ChainInfoQuery) returns (ChainInfoResult);
+
+  // Download a blob that belongs to a pending block on the given chain.
+  rpc DownloadPendingBlob(PendingBlobRequest) returns (PendingBlobResult);
+
+  // Handle a blob that belongs to a pending block on the given chain.
+  rpc HandlePendingBlob(HandlePendingBlobRequest) returns (ChainInfoResult);
 
   // Handle a (trusted!) cross-chain request.
   rpc HandleCrossChainRequest(CrossChainRequest) returns (google.protobuf.Empty);
@@ -40,8 +49,11 @@ service ValidatorNode {
   // Process a certificate without value.
   rpc HandleLiteCertificate(LiteCertificate) returns (ChainInfoResult);
 
-  // Process a certificate.
-  rpc HandleCertificate(HandleCertificateRequest) returns (ChainInfoResult);
+  rpc HandleConfirmedCertificate(HandleConfirmedCertificateRequest) returns (ChainInfoResult);
+
+  rpc HandleValidatedCertificate(HandleValidatedCertificateRequest) returns (ChainInfoResult);
+
+  rpc HandleTimeoutCertificate(HandleTimeoutCertificateRequest) returns (ChainInfoResult);
 
   // Handle information queries for this chain.
   rpc HandleChainInfoQuery(ChainInfoQuery) returns (ChainInfoResult);
@@ -55,22 +67,29 @@ service ValidatorNode {
   // Request the genesis configuration hash of the network this node is part of.
   rpc GetGenesisConfigHash(google.protobuf.Empty) returns (CryptoHash);
 
-  // Downloads a blob content.
-  rpc DownloadBlobContent(BlobId) returns (BlobContent);
+  // Download a blob.
+  rpc DownloadBlob(BlobId) returns (BlobContent);
 
-  // Downloads a certificate value.
-  rpc DownloadCertificateValue(CryptoHash) returns (CertificateValue);
+  // Download a blob that belongs to a pending block on the given chain.
+  rpc DownloadPendingBlob(PendingBlobRequest) returns (PendingBlobResult);
 
-  // Downloads a certificate.
+  // Handle a blob that belongs to a pending block on the given chain.
+  rpc HandlePendingBlob(HandlePendingBlobRequest) returns (ChainInfoResult);
+
+  // Upload a blob. Returns an error if the validator has not seen a
+  // certificate using this blob.
+  rpc UploadBlob(BlobContent) returns (BlobId);
+
+  // Download a certificate.
   rpc DownloadCertificate(CryptoHash) returns (Certificate);
 
-  // Downloads a batch of certificates.
+  // Download a batch of certificates.
   rpc DownloadCertificates(CertificatesBatchRequest) returns (CertificatesBatchResponse);
 
-  // Returns the hash of the `Certificate` that last used a blob.
+  // Return the hash of the `Certificate` that last used a blob.
   rpc BlobLastUsedBy(BlobId) returns (CryptoHash);
 
-  // Returns the `BlobId`s that are not contained as `Blob`.
+  // Return the `BlobId`s that are not contained as `Blob`.
   rpc MissingBlobIds(BlobIds) returns (BlobIds);
 }
 
@@ -171,10 +190,10 @@ message ChainInfoQuery {
   bool request_leader_timeout = 8;
 
   // Query the balance of a given owner.
-  optional Owner request_owner_balance = 10;
+  optional AccountOwner request_owner_balance = 9;
 
   // Request a signed vote for fallback mode.
-  bool request_fallback = 11;
+  bool request_fallback = 10;
 }
 
 // An authenticated proposal for a new block.
@@ -186,10 +205,13 @@ message BlockProposal {
   bytes content = 2;
 
   // Byte-encoded public key
-  Owner owner = 3;
+  PublicKey public_key = 3;
+
+  // Byte-encoded owner
+  Owner owner = 4;
 
   // Signature value
-  Signature signature = 4;
+  Signature signature = 5;
 
   // A lite certificate for a validated block that justifies the proposal in this round.
   optional bytes validated_block_certificate = 6;
@@ -215,23 +237,63 @@ message LiteCertificate {
   // Wait until all outgoing cross-chain messages from this certificate have
   // been received by the target chains.
   bool wait_for_outgoing_messages = 5;
+
+  CertificateKind kind = 6;
 }
 
 // A certified statement from the committee, together with other certificates
 // required for execution.
-message HandleCertificateRequest {
+message HandleTimeoutCertificateRequest {
   // The ID of the chain (used for routing).
   ChainId chain_id = 1;
 
-  // Wait until all outgoing cross-chain messages from this certificate have
-  // been received by the target chains.
-  bool wait_for_outgoing_messages = 6;
+  // A certified statement from the committee.
+  Certificate certificate = 4;
+}
 
-  // Blobs required by this certificate
-  bytes blobs = 7;
+// A certified statement from the committee, together with other certificates
+// required for execution.
+message HandleValidatedCertificateRequest {
+  // The ID of the chain (used for routing).
+  ChainId chain_id = 1;
 
   // A certified statement from the committee.
-  Certificate certificate = 8;
+  Certificate certificate = 2;
+}
+
+// A certified statement from the committee, together with other certificates
+// required for execution.
+message HandleConfirmedCertificateRequest {
+  // The ID of the chain (used for routing).
+  ChainId chain_id = 1;
+
+  // A certified statement from the committee.
+  Certificate certificate = 2;
+
+  // Wait until all outgoing cross-chain messages from this certificate have
+  // been received by the target chains.
+  bool wait_for_outgoing_messages = 3;
+}
+
+// A request for a pending blob.
+message PendingBlobRequest {
+  ChainId chain_id = 1;
+  BlobId blob_id = 2;
+}
+
+// A requested pending blob, or an error.
+message PendingBlobResult {
+  oneof inner {
+    BlobContent blob = 1;
+    // a bincode wrapper around `NodeError`
+    bytes error = 2;
+  }
+}
+
+// A request to handle a pending blob.
+message HandlePendingBlobRequest {
+  ChainId chain_id = 1;
+  BlobContent blob = 2;
 }
 
 // A certified statement from the committee.
@@ -244,10 +306,18 @@ message Certificate {
 
   // Signatures on the value hash and round
   bytes signatures = 3;
+
+  // The kind of certificate serialized in `value` field.
+  CertificateKind kind = 4;
 }
 
-message CertificateValue {
-  bytes bytes = 1;
+enum CertificateKind {
+  // Certificate for a timeout vote.
+  Timeout = 0;
+  // Certificate for a validated block.
+  Validated = 1;
+  // Certificate for a confirmed block.
+  Confirmed = 2;
 }
 
 message ChainId {
@@ -259,6 +329,10 @@ message PublicKey {
 }
 
 message CryptoHash {
+  bytes bytes = 1;
+}
+
+message AccountOwner {
   bytes bytes = 1;
 }
 
