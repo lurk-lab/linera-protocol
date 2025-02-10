@@ -6049,6 +6049,7 @@ checksum = "4ee93343901ab17bd981295f2cf0026d4ad018c7c31ba84549a4ddbb47a45104"
 [[package]]
 name = "loam-macros"
 version = "0.1.0"
+source = "git+https://github.com/lurk-lab/lurk.git?branch=whz%2Fon-linera#87f0826c9e4c1b95113f5ca6a17655d91c4ef6e0"
 dependencies = [
  "derive-syn-parse",
  "itertools 0.13.0",
@@ -6086,6 +6087,7 @@ dependencies = [
 [[package]]
 name = "lurk"
 version = "0.5.0"
+source = "git+https://github.com/lurk-lab/lurk.git?branch=whz%2Fon-linera#87f0826c9e4c1b95113f5ca6a17655d91c4ef6e0"
 dependencies = [
  "anyhow",
  "arc-swap",

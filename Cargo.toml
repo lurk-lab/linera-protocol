@@ -210,8 +210,7 @@ sp1-sdk = "3.4.0"
 sp1-stark = "3.4.0"
 p3-field = "0.1.4-succinct"
 p3-baby-bear = { version = "0.1.4-succinct", features = ["nightly-features"] }
-lurk = { path = "../lurk" }
-# lurk = { git = "https://github.com/lurk-lab/lurk.git", branch = "whz/rebase-sp2" }
+lurk = { git = "https://github.com/lurk-lab/lurk.git", branch = "whz/on-linera" }
 
 linera-base = { version = "0.14.0", path = "./linera-base" }
 linera-chain = { version = "0.14.0", path = "./linera-chain" }
