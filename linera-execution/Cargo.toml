@@ -70,7 +70,11 @@ revm-primitives = { workspace = true, optional = true }
 serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
-tempfile = { workspace = true, optional = true }
+sp1-sdk.workspace = true
+sp1-stark.workspace = true
+p3-field.workspace = true
+p3-baby-bear.workspace = true
+lurk.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, features = ["log"] }
 wasm-encoder = { workspace = true, optional = true }
@@ -101,9 +105,14 @@ test-strategy.workspace = true
 tokio = { workspace = true, features = ["rt", "test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 wasmer = { workspace = true, features = ["singlepass", "wat"] }
+bincode.workspace = true
 
 [build-dependencies]
 cfg_aliases.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]
+
+[patch.crates-io.p3-poseidon2]
+git = "https://github.com/lurk-lab/p3.git"
+branch = "poseidon2-patch"

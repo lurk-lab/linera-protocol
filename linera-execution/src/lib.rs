@@ -645,6 +645,23 @@ pub trait BaseRuntime {
 
     /// Asserts the existence of a data blob with the given hash.
     fn assert_data_blob_exists(&mut self, hash: &CryptoHash) -> Result<(), ExecutionError>;
+
+    // Verifies a given proof based on a verification  key
+    fn verify_proof(&mut self, vk: Vec<u8>, proof_hash: CryptoHash)
+        -> Result<bool, ExecutionError>;
+
+    fn microchain_start(
+        &mut self,
+        chain_state: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError>;
+
+    fn microchain_transition(
+        &mut self,
+        chain_proof_hash: CryptoHash,
+        chain_proofs: Vec<u8>,
+        chain_state: Vec<u8>,
+        zstore_view: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError>;
 }
 
 pub trait ServiceRuntime: BaseRuntime {

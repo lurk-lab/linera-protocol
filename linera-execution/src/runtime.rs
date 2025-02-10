@@ -715,6 +715,32 @@ impl<UserInstance> BaseRuntime for SyncRuntimeHandle<UserInstance> {
     fn assert_data_blob_exists(&mut self, hash: &CryptoHash) -> Result<(), ExecutionError> {
         self.inner().assert_data_blob_exists(hash)
     }
+
+    fn verify_proof(
+        &mut self,
+        vk: Vec<u8>,
+        proof_hash: CryptoHash,
+    ) -> Result<bool, ExecutionError> {
+        self.inner().verify_proof(vk, proof_hash)
+    }
+
+    fn microchain_start(
+        &mut self,
+        chain_state: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError> {
+        self.inner().microchain_start(chain_state)
+    }
+
+    fn microchain_transition(
+        &mut self,
+        chain_proof_hash: CryptoHash,
+        chain_proofs: Vec<u8>,
+        chain_state: Vec<u8>,
+        zstore_view: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError> {
+        self.inner()
+            .microchain_transition(chain_proof_hash, chain_proofs, chain_state, zstore_view)
+    }
 }
 
 impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
@@ -1012,6 +1038,58 @@ impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
                 .replay_oracle_response(OracleResponse::Blob(blob_id))?;
         }
         Ok(())
+    }
+
+    fn verify_proof(
+        &mut self,
+        verifying_key: Vec<u8>,
+        proof_hash: CryptoHash,
+    ) -> Result<bool, ExecutionError> {
+        let proof_blob_id = BlobId::new(proof_hash, BlobType::Data);
+        self.transaction_tracker
+            .replay_oracle_response(OracleResponse::Blob(proof_blob_id))?;
+        let is_correct = self
+            .execution_state_sender
+            .send_request(|callback| ExecutionRequest::VerifyProof {
+                verifying_key,
+                proof_blob_id,
+                callback,
+            })?
+            .recv_response()?;
+        Ok(is_correct)
+    }
+
+    fn microchain_start(
+        &mut self,
+        chain_state: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError> {
+        self.execution_state_sender
+            .send_request(|callback| ExecutionRequest::MicrochainStart {
+                chain_state,
+                callback,
+            })?
+            .recv_response()
+    }
+
+    fn microchain_transition(
+        &mut self,
+        chain_proof_hash: CryptoHash,
+        chain_proofs: Vec<u8>,
+        chain_state: Vec<u8>,
+        zstore_view: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError> {
+        let chain_proof_id = BlobId::new(chain_proof_hash, BlobType::Data);
+        self.transaction_tracker
+            .replay_oracle_response(OracleResponse::Blob(chain_proof_id))?;
+        self.execution_state_sender
+            .send_request(|callback| ExecutionRequest::MicrochainTransition {
+                chain_proof_id,
+                chain_proofs,
+                chain_state,
+                zstore_view,
+                callback,
+            })?
+            .recv_response()
     }
 }
 

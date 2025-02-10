@@ -1094,7 +1094,9 @@ doc_scalar!(
 
 #[cfg(test)]
 mod tests {
-    use super::ChainId;
+    use crate::crypto::CryptoHash;
+
+    use super::{BlobId, ChainId};
 
     /// Verifies that chain IDs that are explicitly used in some example and test scripts don't
     /// change.
@@ -1120,5 +1122,13 @@ mod tests {
             &ChainId::root(999).to_string(),
             "5487b70625ce71f7ee29154ad32aefa1c526cb483bdb783dea2e1d17bc497844"
         );
+    }
+
+    #[test]
+    fn blob_id() {
+        let blob: BlobId = BlobId::new(CryptoHash::test_hash("hello"), super::BlobType::Data);
+        println!("{:?}", serde_json::to_string(&blob).unwrap());
+        let blob_de: BlobId = serde_json::from_str("\"\\\"Data\\\":979b00bfe1d6d793953a155dd850828958ac7c84fe762c1ee4ab923a0e5634bc\"").unwrap();
+        assert_eq!(blob_de, blob)
     }
 }
