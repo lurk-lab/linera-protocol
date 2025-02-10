@@ -1,40 +1,14 @@
 # Microchain Example Application
 
-This example application implements microchain campaigns using fungible tokens in
-the `fungible` application. This demonstrates how to compose applications together and
-how to instantiate applications where one chain has a special role.
-
-Once an application is built and its bytecode published on a Linera chain, the
-published bytecode can be used to create different instances. Each instance or microchain
-represents a different campaign.
+TODO
 
 ## How It Works
 
-The chain that created the campaign is called the "campaign chain". It is owned by the
-creator (and beneficiary) of the campaign.
-
-The goal of a microchain campaign is to let people pledge any number of tokens from
-their own chain(s). If enough tokens are pledged before the campaign expires, the campaign is
-_successful_ and the creator can receive all the funds, including ones exceeding the funding
-target. Otherwise, the campaign is _unsuccessful_ and contributors should be refunded.
-
-## Caveat
-
-Currently, only the owner of the campaign can create blocks that contain the `Cancel`
-operation. In the future, campaign chains will not be single-owner chains and should
-instead allow contributors (users with a pledge) to cancel the campaign if
-appropriate (even without the owner's cooperation).
-
-Optionally, contributors may also be able to create a block to accept a new epoch
-(i.e. a change of validators).
-
-<!--
-TODO: The following documentation involves `sleep`ing to avoid some race conditions. See:
-  - https://github.com/linera-io/linera-protocol/issues/1176
-  - https://github.com/linera-io/linera-protocol/issues/1177
--->
+TODO
 
 ## Usage
+
+TODO
 
 ### Setting Up
 
@@ -104,7 +78,7 @@ chain IDs as `$CHAIN_0` (the chain where we just published the application) and 
 
 ### Creating a microchain
 
-TODO: Run lurk and publish datablob
+TODO: You need you run a lurk microchain and replace the hardcoded paths below with your local paths.
 
 ```bash
 GENESIS_BLOB_ID=$(linera --with-wallet 0 \
@@ -172,7 +146,7 @@ On both http://localhost:8080 and http://localhost:8081, you recognize the micro
 application by its ID. The entry also has a field `link`. If you open that in a new tab, you
 see the GraphQL API for that application on that chain.
 
-Let's pledge 30 tokens by the campaign creator themself.
+Let's prove a single transition from the owner.
 For `$OWNER_0` on 8080, run `echo "http://localhost:8080/chains/$CHAIN_0/applications/$APP_ID"` to get the URL, open it
 and run the following query:
 
@@ -182,37 +156,10 @@ mutation { transition(
 ) }
 ```
 
-This will make the owner show up if we list everyone who has made a pledge so far:
+You can see the changed state, although only as bytes:
 
-```gql,uri=http://localhost:8080/chains/$CHAIN_0/applications/$APP_ID_1
-query { pledges { keys } }
-```
-
-To also have `$OWNER_1` make a pledge, they first need to claim their tokens. Those are still
-on the other chain, where the application was created. To get the link on 8081
-for the fungible application, run `echo "http://localhost:8081/chains/$CHAIN_1/applications/$APP_ID_0"`,
-open it and run the following query:
-
-```gql,uri=http://localhost:8081/chains/$CHAIN_1/applications/$APP_ID_0
-mutation { claim(
-  sourceAccount: {
-    owner: "User:$OWNER_1",
-    chainId: "$CHAIN_0"
-  },
-  amount: "200.",
-  targetAccount: {
-    owner: "User:$OWNER_1",
-    chainId: "$CHAIN_1"
-  }
-) }
-```
-
-You can check that the 200 tokens have arrived:
-
-```gql,uri=http://localhost:8081/chains/$CHAIN_1/applications/$APP_ID_0
-query {
-  accounts { entry(key: "User:$OWNER_1") { value } }
-}
+```gql,uri=http://localhost:8080/chains/$CHAIN_0/applications/$APP_ID
+query { chainState }
 ```
 
 Now, also on 8081, you can open the link for the microchain
@@ -220,26 +167,7 @@ application you get when you run `echo "http://localhost:8081/chains/$CHAIN_1/ap
 and run:
 
 ```gql,uri=http://localhost:8081/chains/$CHAIN_1/applications/$APP_ID_1
-mutation { pledge(
-  owner:"User:$OWNER_1",
-  amount:"80."
+mutation { transition(
+  chainProof: "TODO"
 ) }
-```
-
-This pledges another 80 tokens. With 110 pledged in total, we have now reached the campaign
-goal. Now the campaign owner (on 8080) can collect the funds:
-
-```gql,uri=http://localhost:8080/chains/$CHAIN_0/applications/$APP_ID_1
-mutation { collect }
-```
-
-Get the fungible application on
-8080 URL by running `echo "http://localhost:8080/chains/$CHAIN_0/applications/$APP_ID_0"`,
-then check that we have received 110 tokens, in addition to the
-70 that we had left after pledging 30 by running the following query:
-
-```gql,uri=http://localhost:8080/chains/$CHAIN_0/applications/$APP_ID_0
-query {
-  accounts { entry(key: "User:$OWNER_0") { value } }
-}
 ```
