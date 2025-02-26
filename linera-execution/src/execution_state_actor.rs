@@ -19,7 +19,6 @@ use linera_base::{
     ownership::ChainOwnership,
 };
 use linera_views::{batch::Batch, context::Context, views::View};
-use linera_witty::{WitLoad, WitStore, WitType};
 use oneshot::Sender;
 #[cfg(with_metrics)]
 use prometheus::HistogramVec;

@@ -37,9 +37,8 @@ use linera_views::{
 };
 use lurk::{
     core::{
-        chipset::{lurk_hasher, LurkChip},
+        chipset::lurk_hasher,
         cli::{
-            comm_data::CommData,
             microchain::{CallableData, ChainState},
             proofs::{get_verifier_version, ChainProof, OpaqueChainProof},
         },
@@ -51,7 +50,6 @@ use lurk::{
     lair::lair_chip::LairMachineProgram,
 };
 use p3_baby_bear::BabyBear;
-use p3_field::AbstractField;
 use serde::{Deserialize, Serialize};
 use sp1_sdk::ProverClient;
 use sp1_stark::StarkGenericConfig;
@@ -442,6 +440,15 @@ pub enum SystemExecutionError {
     OracleResponseMismatch,
     #[error("No recorded response for oracle query")]
     MissingOracleResponse,
+
+    #[error("Failed to serialize {0:?}")]
+    SerializationFailed(String),
+    #[error("Failed to deserialize {0:?}")]
+    DeserializationFailed(String),
+    #[error("Data {0:?} is flawed")]
+    FlawedData(String),
+    #[error("Proof verification failed, version {0:?}")]
+    ProofVerificationFailed(String),
 }
 
 impl From<ViewError> for SystemExecutionError {
@@ -1144,9 +1151,9 @@ where
         let prover = Box::new(ProverClient::new());
         let proof_bytes = self.read_blob_content(proof_blob_id).await?.into_bytes();
         let verifying_key = bincode::deserialize_from(verifying_key.as_slice())
-            .expect("Failed to deserialize verifying key");
-        let proof =
-            bincode::deserialize_from(&proof_bytes[..]).expect("Failed to deserialize proof");
+            .map_err(|_| SystemExecutionError::DeserializationFailed("verifying_key".into()))?;
+        let proof = bincode::deserialize_from(&proof_bytes[..])
+            .map_err(|_| SystemExecutionError::DeserializationFailed("proof".into()))?;
 
         Ok(prover.verify(&proof, &verifying_key).is_ok())
     }
@@ -1159,13 +1166,19 @@ where
         let (_toplevel, mut zstore, _) = build_lurk_toplevel(Lang::empty());
         let _empty_env = zstore.intern_empty_env();
 
-        let chain_state: ChainState =
-            bincode::deserialize_from(&chain_state[..]).expect("Failed to deserialize chain state");
+        let chain_state: ChainState = bincode::deserialize_from(&chain_state[..])
+            .map_err(|_| SystemExecutionError::DeserializationFailed("chain_state".into()))?;
         if chain_state.chain_result.is_flawed(&mut zstore) {
-            panic!("chain_result.is_flawed")
+            return Err(SystemExecutionError::FlawedData(format!(
+                "chain_result ({:?})",
+                chain_state.chain_result.zptr.digest
+            )));
         }
         if chain_state.callable_data.is_flawed(&mut zstore) {
-            panic!("callable_data.is_flawed")
+            return Err(SystemExecutionError::FlawedData(format!(
+                "callable_data ({:?})",
+                chain_state.callable_data.zptr(&mut zstore).digest
+            )));
         }
 
         // We need to think about this more.
@@ -1178,13 +1191,13 @@ where
         // let id = CommData::hash(&id_secret[..].try_into().unwrap(), &state_cons, &mut zstore);
 
         let chain_proofs: Vec<OpaqueChainProof> = vec![];
-        let chain_proofs =
-            bincode::serialize(&chain_proofs).expect("Failed to serialize chain proofs");
-        let chain_state =
-            bincode::serialize(&chain_state).expect("Failed to serialize chain state");
+        let chain_proofs = bincode::serialize(&chain_proofs)
+            .map_err(|_| SystemExecutionError::SerializationFailed("chain_proofs".into()))?;
+        let chain_state = bincode::serialize(&chain_state)
+            .map_err(|_| SystemExecutionError::SerializationFailed("chain_state".into()))?;
         let zstore_view = zstore.to_view();
-        let zstore_view =
-            bincode::serialize(&zstore_view).expect("Failed to serialize zstore view");
+        let zstore_view = bincode::serialize(&zstore_view)
+            .map_err(|_| SystemExecutionError::SerializationFailed("zstore_view".into()))?;
 
         return Ok((chain_proofs, chain_state, zstore_view));
     }
@@ -1198,13 +1211,13 @@ where
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), SystemExecutionError> {
         let chain_proof_bytes = self.read_blob_content(chain_proof_id).await?.into_bytes();
         let chain_proof: ChainProof = bincode::deserialize_from(&chain_proof_bytes[..])
-            .expect("Failed to deserialize chain proof");
+            .map_err(|_| SystemExecutionError::DeserializationFailed("chain_proof".into()))?;
         let mut chain_proofs: Vec<OpaqueChainProof> = bincode::deserialize_from(&chain_proofs[..])
-            .expect("Failed to deserialize chain proofs");
-        let chain_state: ChainState =
-            bincode::deserialize_from(&chain_state[..]).expect("Failed to deserialize chain state");
-        let zstore_view: ZStoreView<BabyBear> =
-            bincode::deserialize_from(&zstore_view[..]).expect("Failed to deserialize zstore view");
+            .map_err(|_| SystemExecutionError::DeserializationFailed("chain_proofs".into()))?;
+        let chain_state: ChainState = bincode::deserialize_from(&chain_state[..])
+            .map_err(|_| SystemExecutionError::DeserializationFailed("chain_state".into()))?;
+        let zstore_view: ZStoreView<BabyBear> = bincode::deserialize_from(&zstore_view[..])
+            .map_err(|_| SystemExecutionError::DeserializationFailed("zstore_view".into()))?;
         let mut zstore = ZStore::from_view(zstore_view, lurk_hasher());
 
         let ChainProof {
@@ -1216,7 +1229,10 @@ where
 
         let next_chain_result_zptr = {
             if next_chain_result.is_flawed(&mut zstore) {
-                panic!("next_chain_result.is_flawed")
+                return Err(SystemExecutionError::FlawedData(format!(
+                    "next_chain_result ({:?})",
+                    next_chain_result.zptr.digest
+                )));
             }
             next_chain_result.zptr
         };
@@ -1224,13 +1240,19 @@ where
         let next_callable_zptr = match &next_callable {
             CallableData::Comm(comm_data) => {
                 if comm_data.payload_is_flawed(&mut zstore) {
-                    panic!("comm_data.payload_is_flawed")
+                    return Err(SystemExecutionError::FlawedData(format!(
+                        "comm_data ({:?})",
+                        comm_data.payload.digest
+                    )));
                 }
                 comm_data.commit(&mut zstore)
             }
             CallableData::Fun(lurk_data) => {
                 if lurk_data.is_flawed(&mut zstore) {
-                    panic!("lurk_data.is_flawed")
+                    return Err(SystemExecutionError::FlawedData(format!(
+                        "lurk_data ({:?})",
+                        lurk_data.zptr.digest
+                    )));
                 }
                 lurk_data.zptr
             }
@@ -1255,7 +1277,9 @@ where
         let challenger = &mut machine.config().challenger();
         if machine.verify(&vk, &machine_proof, challenger).is_err() {
             let verifier_version = get_verifier_version().to_string();
-            panic!("ProofVerificationFailed {}", verifier_version)
+            return Err(SystemExecutionError::ProofVerificationFailed(
+                verifier_version,
+            ));
         }
 
         // everything went okay... transition to the next state
@@ -1268,19 +1292,19 @@ where
             next_callable: next_callable_zptr,
         });
 
-        let chain_proofs =
-            bincode::serialize(&chain_proofs).expect("Failed to serialize next chain proofs");
+        let chain_proofs = bincode::serialize(&chain_proofs)
+            .map_err(|_| SystemExecutionError::SerializationFailed("chain_proofs".into()))?;
 
         let next_chain_state = ChainState {
             chain_result: next_chain_result,
             callable_data: next_callable,
         };
-        let next_chain_state =
-            bincode::serialize(&next_chain_state).expect("Failed to serialize next chain state");
+        let next_chain_state = bincode::serialize(&next_chain_state)
+            .map_err(|_| SystemExecutionError::SerializationFailed("next_chain_state".into()))?;
 
         let zstore_view = zstore.to_view();
-        let zstore_view =
-            bincode::serialize(&zstore_view).expect("Failed to serialize zstore view");
+        let zstore_view = bincode::serialize(&zstore_view)
+            .map_err(|_| SystemExecutionError::SerializationFailed("zstore_view".into()))?;
 
         // update the proof index
         // let mut proof_index = load_proof_index(&id).unwrap_or_default();

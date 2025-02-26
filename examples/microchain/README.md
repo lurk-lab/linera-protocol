@@ -83,13 +83,13 @@ TODO: You need you run a lurk microchain and replace the hardcoded paths below w
 ```bash
 GENESIS_BLOB_ID=$(linera --with-wallet 0 \
           publish-data-blob \
-          ~/.lurk/microchains/3cdee6c57b0b8bbdfa1497cbd4ff37c35bf18b8fdc8aad04854b14c98e8271/genesis_state)
+          ~/.lurk/microchains/5e5eca21f5e9fe4967e15e99078d0f86248239db3471b1c63197f4df7cc162/genesis_state)
 ```
 
 ```bash
 TRANSITION_0=$(linera --with-wallet 0 \
           publish-data-blob \
-          ~/.lurk/microchains/3cdee6c57b0b8bbdfa1497cbd4ff37c35bf18b8fdc8aad04854b14c98e8271/_0)
+          ~/.lurk/microchains/5e5eca21f5e9fe4967e15e99078d0f86248239db3471b1c63197f4df7cc162/_0)
 ```
 
 ```bash
