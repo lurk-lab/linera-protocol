@@ -40,8 +40,6 @@ impl Contract for MicrochainContract {
         // Validate that the application parameters were configured correctly.
         let _ = self.runtime.application_parameters();
 
-        // self.runtime.
-
         self.runtime
             .assert_data_blob_exists(argument.chain_state.clone());
         let chain_state = self.runtime.read_data_blob(argument.chain_state);

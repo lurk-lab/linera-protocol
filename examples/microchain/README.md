@@ -43,9 +43,12 @@ predictable.
 
 ```bash
 CHAIN_0=e476187f6ddfeb9d588c7b45d3df334d5501d6499b3f9ad5595cae86cce16a65
-OWNER_0=7136460f0c87ae46f966f898d494c4b40c4ae8c527f4d1c0b1fa0f7cff91d20f
-CHAIN_1=1db1936dad0717597a7743a8353c9c0191c14c3a129b258e9743aec2b4f05d03
-OWNER_1=b4f8586041a07323bd4f4ed2d758bf1b9a977eabfd4c00e2f12d08a0899485fd
+
+OWNER_1=$(linera -w0 keygen)
+OWNER_2=$(linera -w1 keygen)
+# OWNER_0=7136460f0c87ae46f966f898d494c4b40c4ae8c527f4d1c0b1fa0f7cff91d20f
+# CHAIN_1=1db1936dad0717597a7743a8353c9c0191c14c3a129b258e9743aec2b4f05d03
+# OWNER_1=b4f8586041a07323bd4f4ed2d758bf1b9a977eabfd4c00e2f12d08a0899485fd
 ```
 
 Alternatively, the command below can be used to list the chains created for the test as
@@ -54,20 +57,6 @@ known by each wallet:
 ```bash
 linera --with-wallet 0 wallet show
 linera --with-wallet 1 wallet show
-```
-
-A table will be shown with the chains registered in the wallet and their meta-data:
-
-```text,ignore
-╭──────────────────────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────╮
-│ Chain Id                                                         ┆ Latest Block                                                                         │
-╞══════════════════════════════════════════════════════════════════╪══════════════════════════════════════════════════════════════════════════════════════╡
-│ 1db1936dad0717597a7743a8353c9c0191c14c3a129b258e9743aec2b4f05d03 ┆ Public Key:         84eddaaafce7fb923c3b2494b3d25e54e910490a726ad9b3a2228d3fb18f9874 │
-│                                                                  ┆ Owner:              b4f8586041a07323bd4f4ed2d758bf1b9a977eabfd4c00e2f12d08a0899485fd │
-│                                                                  ┆ Block Hash:         -                                                                │
-│                                                                  ┆ Timestamp:          2023-06-28 09:53:51.167301                                       │
-│                                                                  ┆ Next Block Height:  0                                                                │
-╰──────────────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 The default chain of each wallet should be highlighted in green. Each chain has an
@@ -87,7 +76,7 @@ GENESIS_BLOB_ID=$(linera --with-wallet 0 \
 ```
 
 ```bash
-TRANSITION_0=$(linera --with-wallet 0 \
+TRANSITION_0=$(linera --with-wallet 1 \
           publish-data-blob \
           ~/.lurk/microchains/5e5eca21f5e9fe4967e15e99078d0f86248239db3471b1c63197f4df7cc162/_0)
 ```
@@ -101,6 +90,16 @@ APP_ID=$(linera --with-wallet 0 \
 
 # Wait for it to fully complete
 sleep 5
+
+linera -w0 open-multi-owner-chain \
+    --from $CHAIN_0 \
+    --owners $OWNER_1 $OWNER_2 \
+    --multi-leader-rounds 2
+
+NEW_CHAIN=fc9384defb0bcd8f6e206ffda32599e24ba715f45ec88d4ac81ec47eb84fa111
+MESSAGE_ID=e476187f6ddfeb9d588c7b45d3df334d5501d6499b3f9ad5595cae86cce16a65010000000000000000000000
+
+linera -w1 assign --owner $OWNER_2 --message-id $MESSAGE_ID
 ```
 
 ### Interacting with the microchain
@@ -118,6 +117,10 @@ linera --with-wallet 1 service --port 8081 &
 # Wait for it to fully complete
 sleep 2
 ```
+
+```bash
+```
+
 
 Type each of these in the GraphiQL interface and substitute the env variables with their actual values that we've defined above.
 
