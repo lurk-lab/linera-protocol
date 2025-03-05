@@ -102,8 +102,7 @@ impl LurkMicrochainContract {
             100,
             TimeoutConfig::default(),
         );
-        let app_id = self.runtime.application_id();
-        let permissions = ApplicationPermissions::new_single(app_id.forget_abi());
+        let permissions = ApplicationPermissions::default();
         let (message_id, chain_id) = self
             .runtime
             .open_chain(ownership, permissions, Amount::ZERO);
