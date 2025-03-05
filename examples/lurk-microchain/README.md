@@ -7,18 +7,11 @@
 Make sure you have the `linera` binary in your `PATH`, and that it is compatible with your
 `linera-sdk` version.
 
-For scripting purposes, we also assume that the BASH function
-`linera_spawn_and_read_wallet_variables` is defined. From the root of Linera repository, this can
-be achieved as follows:
+To start the local Linera network and create two wallets:
 
 ```bash
 export PATH="$PWD/target/debug:$PATH"
 source /dev/stdin <<<"$(linera net helper 2>/dev/null)"
-```
-
-To start the local Linera network and create two wallets:
-
-```bash
 linera_spawn_and_read_wallet_variables linera net up --testing-prng-seed 37 --extra-wallets 1
 ```
 
@@ -61,10 +54,10 @@ on the URL you get by running `echo "http://localhost:8080/chains/$CHAIN_0/appli
 mutation {
   start(
     accounts: [
-        "$OWNER_0",
-        "$OWNER_1"
+        \"$OWNER_0\",
+        \"$OWNER_1\"
     ],
-    chainState: "$GENESIS_BLOB_ID"
+    chainState: \"$GENESIS_BLOB_ID\"
   )
 }
 ```
@@ -84,7 +77,7 @@ It contains the temporary chain's ID, and the ID of the message that created it:
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID
 query {
   chains {
-    entry(key: "$OWNER_0") {
+    entry(key: \"$OWNER_0\") {
       value {
         messageId chainId
       }
@@ -115,8 +108,13 @@ sleep 1
 
 Now the first player can make a move by navigating to the URL you get by running `echo "http://localhost:8080/chains/$MICROCHAIN/applications/$APP_ID"`:
 
+```bash
+TRANSITION_0=$(linera -w1 publish-data-blob \
+  ~/.lurk/microchains/5e5eca21f5e9fe4967e15e99078d0f86248239db3471b1c63197f4df7cc162/_0 $MICROCHAIN)
+```
+
 ```gql,uri=http://localhost:8080/chains/$MICROCHAIN/applications/$APP_ID
-mutation { transition(chainProof: ) }
+mutation { transition(chainProof: \"$TRANSITION_0\") }
 ```
 
 And the second player player at the URL you get by running `echo "http://localhost:8081/chains/$MICROCHAIN/applications/$APP_ID"`:
