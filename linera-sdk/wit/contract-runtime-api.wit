@@ -18,9 +18,8 @@ interface contract-runtime-api {
     emit: func(name: stream-name, key: list<u8>, value: list<u8>);
     query-service: func(application-id: application-id, query: list<u8>) -> list<u8>;
     consume-fuel: func(fuel: u64);
-    verify-proof: func(verifying-key: list<u8>, hash: crypto-hash) -> bool;
-    microchain-start: func(chain-state: list<u8>) -> tuple<list<u8>, list<u8>, list<u8>>;
-    microchain-transition: func(chain-proof-hash: crypto-hash, chain-proofs: list<u8>, chain-state: list<u8>, zstore-view: list<u8>) -> tuple<list<u8>, list<u8>, list<u8>>;
+    validation-round: func() -> option<u32>;
+    write-batch: func(operations: list<write-operation>);
 
     record account {
         chain-id: chain-id,

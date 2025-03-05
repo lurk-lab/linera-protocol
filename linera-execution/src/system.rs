@@ -51,7 +51,6 @@ use lurk::{
 };
 use p3_baby_bear::BabyBear;
 use serde::{Deserialize, Serialize};
-use sp1_sdk::ProverClient;
 use sp1_stark::StarkGenericConfig;
 use thiserror::Error;
 #[cfg(with_metrics)]
@@ -1141,21 +1140,6 @@ where
         } else {
             Err(SystemExecutionError::BlobsNotFound(vec![blob_id]))
         }
-    }
-
-    pub async fn verify_proof(
-        &mut self,
-        verifying_key: Vec<u8>,
-        proof_blob_id: BlobId,
-    ) -> Result<bool, SystemExecutionError> {
-        let prover = Box::new(ProverClient::new());
-        let proof_bytes = self.read_blob_content(proof_blob_id).await?.into_bytes();
-        let verifying_key = bincode::deserialize_from(verifying_key.as_slice())
-            .map_err(|_| SystemExecutionError::DeserializationFailed("verifying_key".into()))?;
-        let proof = bincode::deserialize_from(&proof_bytes[..])
-            .map_err(|_| SystemExecutionError::DeserializationFailed("proof".into()))?;
-
-        Ok(prover.verify(&proof, &verifying_key).is_ok())
     }
 
     pub async fn microchain_start(

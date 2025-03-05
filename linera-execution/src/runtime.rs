@@ -716,14 +716,6 @@ impl<UserInstance> BaseRuntime for SyncRuntimeHandle<UserInstance> {
         self.inner().assert_data_blob_exists(hash)
     }
 
-    fn verify_proof(
-        &mut self,
-        vk: Vec<u8>,
-        proof_hash: CryptoHash,
-    ) -> Result<bool, ExecutionError> {
-        self.inner().verify_proof(vk, proof_hash)
-    }
-
     fn microchain_start(
         &mut self,
         chain_state: Vec<u8>,
@@ -1038,25 +1030,6 @@ impl<UserInstance> BaseRuntime for SyncRuntimeInternal<UserInstance> {
                 .replay_oracle_response(OracleResponse::Blob(blob_id))?;
         }
         Ok(())
-    }
-
-    fn verify_proof(
-        &mut self,
-        verifying_key: Vec<u8>,
-        proof_hash: CryptoHash,
-    ) -> Result<bool, ExecutionError> {
-        let proof_blob_id = BlobId::new(proof_hash, BlobType::Data);
-        self.transaction_tracker
-            .replay_oracle_response(OracleResponse::Blob(proof_blob_id))?;
-        let is_correct = self
-            .execution_state_sender
-            .send_request(|callback| ExecutionRequest::VerifyProof {
-                verifying_key,
-                proof_blob_id,
-                callback,
-            })?
-            .recv_response()?;
-        Ok(is_correct)
     }
 
     fn microchain_start(

@@ -358,18 +358,6 @@ where
                 callback.respond(self.system.blob_used(None, blob_id).await?)
             }
 
-            VerifyProof {
-                verifying_key,
-                proof_blob_id,
-                callback,
-            } => {
-                let is_correct = self
-                    .system
-                    .verify_proof(verifying_key, proof_blob_id)
-                    .await?;
-                callback.respond(is_correct);
-            }
-
             MicrochainStart {
                 chain_state,
                 callback,
@@ -571,14 +559,7 @@ pub enum ExecutionRequest {
         #[debug(skip)]
         callback: Sender<bool>,
     },
-
-    VerifyProof {
-        verifying_key: Vec<u8>,
-        proof_blob_id: BlobId,
-        #[debug(skip)]
-        callback: Sender<bool>,
-    },
-
+    
     MicrochainStart {
         chain_state: Vec<u8>,
         #[debug(skip)]
