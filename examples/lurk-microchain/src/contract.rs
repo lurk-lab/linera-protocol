@@ -7,9 +7,9 @@ mod state;
 
 use async_graphql::ComplexObject;
 use linera_sdk::{
-    base::{
+    abi::WithContractAbi,
+    linera_base_types::{
         Amount, ApplicationPermissions, ChainId, ChainOwnership, Owner, TimeoutConfig,
-        WithContractAbi,
     },
     views::{RootView, View},
     Contract, ContractRuntime, DataBlobHash,

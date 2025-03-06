@@ -5,19 +5,19 @@
 
 mod state;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_graphql::{EmptySubscription, Request, Response, Schema};
-use lurk_microchain::Operation;
 use linera_sdk::{
-    base::WithServiceAbi, graphql::GraphQLMutationRoot, views::View, Service, ServiceRuntime,
+    abi::WithServiceAbi, graphql::GraphQLMutationRoot, views::View, Service, ServiceRuntime,
 };
+use lurk_microchain::Operation;
 
 use self::state::LurkMicrochainState;
 
 #[derive(Clone)]
 pub struct LurkMicrochainService {
-    runtime: Arc<Mutex<ServiceRuntime<LurkMicrochainService>>>,
+    runtime: Arc<ServiceRuntime<LurkMicrochainService>>,
     state: Arc<LurkMicrochainState>,
 }
 
@@ -35,7 +35,7 @@ impl Service for LurkMicrochainService {
             .await
             .expect("Failed to load state");
         LurkMicrochainService {
-            runtime: Arc::new(Mutex::new(runtime)),
+            runtime: Arc::new(runtime),
             state: Arc::new(state),
         }
     }
@@ -43,10 +43,9 @@ impl Service for LurkMicrochainService {
     async fn handle_query(&self, request: Request) -> Response {
         let schema = Schema::build(
             self.state.clone(),
-            Operation::mutation_root(),
+            Operation::mutation_root(self.runtime.clone()),
             EmptySubscription,
         )
-        .data(self.runtime.clone())
         .finish();
         schema.execute(request).await
     }

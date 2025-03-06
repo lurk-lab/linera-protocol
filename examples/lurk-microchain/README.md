@@ -58,6 +58,9 @@ GENESIS_BLOB_ID=$(linera -w1 publish-data-blob \
 TRANSITION_0=$(linera -w2 publish-data-blob \
   ~/.lurk/microchains/5e5eca21f5e9fe4967e15e99078d0f86248239db3471b1c63197f4df7cc162/_0)
 
+OWNER_1=$(linera -w1 keygen)
+OWNER_2=$(linera -w2 keygen)
+
 linera -w1 service --port 8080 &
 sleep 1
 ```
@@ -126,7 +129,7 @@ sleep 1
 Now the first player can make a move by navigating to the URL you get by running `echo "http://localhost:8080/chains/$MICROCHAIN/applications/$APP_ID"`:
 
 ```bash
-TRANSITION_0=$(linera -w1 publish-data-blob \
+TRANSITION_0=$(linera -w2 publish-data-blob \
   ~/.lurk/microchains/5e5eca21f5e9fe4967e15e99078d0f86248239db3471b1c63197f4df7cc162/_0 $MICROCHAIN)
 ```
 

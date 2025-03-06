@@ -3,8 +3,10 @@
 
 use async_graphql::{Request, Response};
 use linera_sdk::{
-    base::{ContractAbi, Owner, ServiceAbi},
-    graphql::GraphQLMutationRoot, DataBlobHash,
+    abi::{ContractAbi, ServiceAbi},
+    graphql::GraphQLMutationRoot,
+    linera_base_types::Owner,
+    DataBlobHash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +14,9 @@ pub struct LurkMicrochainAbi;
 
 #[derive(Debug, Deserialize, Serialize, GraphQLMutationRoot)]
 pub enum Operation {
-    Transition { chain_proof: DataBlobHash },
+    Transition {
+        chain_proof: DataBlobHash,
+    },
     Start {
         /// The public keys of player 1 and 2, respectively.
         accounts: [Owner; 2],

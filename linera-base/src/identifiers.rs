@@ -1128,7 +1128,10 @@ mod tests {
     fn blob_id() {
         let blob: BlobId = BlobId::new(CryptoHash::test_hash("hello"), super::BlobType::Data);
         println!("{:?}", serde_json::to_string(&blob).unwrap());
-        let blob_de: BlobId = serde_json::from_str("\"\\\"Data\\\":979b00bfe1d6d793953a155dd850828958ac7c84fe762c1ee4ab923a0e5634bc\"").unwrap();
+        let blob_de: BlobId = serde_json::from_str(
+            "\"\\\"Data\\\":979b00bfe1d6d793953a155dd850828958ac7c84fe762c1ee4ab923a0e5634bc\"",
+        )
+        .unwrap();
         assert_eq!(blob_de, blob)
     }
 }

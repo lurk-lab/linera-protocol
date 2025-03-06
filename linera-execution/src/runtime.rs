@@ -1534,7 +1534,6 @@ impl ContractRuntime for ContractSyncRuntimeHandle {
         Ok(())
     }
 
-
     fn microchain_start(
         &mut self,
         chain_state: Vec<u8>,

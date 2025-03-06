@@ -559,7 +559,7 @@ pub enum ExecutionRequest {
         #[debug(skip)]
         callback: Sender<bool>,
     },
-    
+
     MicrochainStart {
         chain_state: Vec<u8>,
         #[debug(skip)]
