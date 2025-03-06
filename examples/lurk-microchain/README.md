@@ -7,55 +7,72 @@
 Make sure you have the `linera` binary in your `PATH`, and that it is compatible with your
 `linera-sdk` version.
 
-To start the local Linera network and create two wallets:
+For scripting purposes, we also assume that the BASH function `linera_spawn` is defined.
+From the root of Linera repository, this can be achieved as follows:
 
 ```bash
 export PATH="$PWD/target/debug:$PATH"
 source /dev/stdin <<<"$(linera net helper 2>/dev/null)"
-linera_spawn_and_read_wallet_variables linera net up --testing-prng-seed 37 --extra-wallets 1
 ```
 
-We use the test-only CLI option `--testing-prng-seed` to make keys deterministic and simplify our
-explanation.
+Start the local Linera network and run a faucet:
 
 ```bash
-CHAIN_0=e476187f6ddfeb9d588c7b45d3df334d5501d6499b3f9ad5595cae86cce16a65
+FAUCET_PORT=8079
+FAUCET_URL=http://localhost:$FAUCET_PORT
+linera net up --with-faucet --faucet-port $FAUCET_PORT &
+LINERA_TMP_DIR=$(mktemp -d)
 ```
 
-### Creating the Game Chain
-
-We open a new chain owned by both `$OWNER_0` and `$OWNER_1`, create the application on it, and
-start the node service.
+Create the user wallets and add chains to them:
 
 ```bash
-APP_ID=$(linera -w0 --wait-for-outgoing-messages \
-  project publish-and-create examples/lurk-microchain lurk_microchain $CHAIN_0)
+export LINERA_WALLET_1="$LINERA_TMP_DIR/wallet_1.json"
+export LINERA_STORAGE_1="rocksdb:$LINERA_TMP_DIR/client_1.db"
+export LINERA_WALLET_2="$LINERA_TMP_DIR/wallet_2.json"
+export LINERA_STORAGE_2="rocksdb:$LINERA_TMP_DIR/client_2.db"
 
-OWNER_0=$(linera -w0 keygen)
-OWNER_1=$(linera -w1 keygen)
+linera --with-wallet 1 wallet init --faucet $FAUCET_URL
+linera --with-wallet 2 wallet init --faucet $FAUCET_URL
 
+INFO_1=($(linera --with-wallet 1 wallet request-chain --faucet $FAUCET_URL))
+INFO_2=($(linera --with-wallet 2 wallet request-chain --faucet $FAUCET_URL))
+CHAIN_1="${INFO_1[0]}"
+CHAIN_2="${INFO_2[0]}"
+OWNER_1="${INFO_1[3]}"
+OWNER_2="${INFO_2[3]}"
+```
 
-GENESIS_BLOB_ID=$(linera -w0 publish-data-blob \
+Note that `linera --with-wallet 1` or `linera -w1` is equivalent to `linera --wallet
+"$LINERA_WALLET_1" --storage "$LINERA_STORAGE_1"`.
+
+### Creating the Lurk Microchain
+
+```bash
+APP_ID=$(linera -w1 --wait-for-outgoing-messages \
+  project publish-and-create examples/lurk-microchain lurk_microchain $CHAIN_1)
+
+GENESIS_BLOB_ID=$(linera -w1 publish-data-blob \
   ~/.lurk/microchains/5e5eca21f5e9fe4967e15e99078d0f86248239db3471b1c63197f4df7cc162/genesis_state)
 
-TRANSITION_0=$(linera -w1 publish-data-blob \
+TRANSITION_0=$(linera -w2 publish-data-blob \
   ~/.lurk/microchains/5e5eca21f5e9fe4967e15e99078d0f86248239db3471b1c63197f4df7cc162/_0)
 
-linera -w0 service --port 8080 &
+linera -w1 service --port 8080 &
 sleep 1
 ```
 
 Type each of these in the GraphiQL interface and substitute the env variables with their actual values that we've defined above.
 
 The `start` mutation starts a new game. We specify the two players using their new public keys,
-on the URL you get by running `echo "http://localhost:8080/chains/$CHAIN_0/applications/$APP_ID"`:
+on the URL you get by running `echo "http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID"`:
 
-```gql,uri=http://localhost:8080/chains/$CHAIN_0/applications/$APP_ID
+```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID
 mutation {
   start(
     accounts: [
-        \"$OWNER_0\",
-        \"$OWNER_1\"
+        \"$OWNER_1\",
+        \"$OWNER_2\"
     ],
     chainState: \"$GENESIS_BLOB_ID\"
   )
@@ -77,7 +94,7 @@ It contains the temporary chain's ID, and the ID of the message that created it:
 ```gql,uri=http://localhost:8080/chains/$CHAIN_1/applications/$APP_ID
 query {
   chains {
-    entry(key: \"$OWNER_0\") {
+    entry(key: \"$OWNER_1\") {
       value {
         messageId chainId
       }
@@ -96,11 +113,11 @@ kill %% && sleep 1    # Kill the service so we can use CLI commands for wallet 0
 MICROCHAIN=a393137daba303e8b561cb3a5bff50efba1fb7f24950db28f1844b7ac2c1cf27
 MESSAGE_ID=e476187f6ddfeb9d588c7b45d3df334d5501d6499b3f9ad5595cae86cce16a65050000000000000000000000
 
-linera -w0 assign --owner $OWNER_0 --message-id $MESSAGE_ID
 linera -w1 assign --owner $OWNER_1 --message-id $MESSAGE_ID
+linera -w2 assign --owner $OWNER_2 --message-id $MESSAGE_ID
 
-linera -w0 service --port 8080 &
-linera -w1 service --port 8081 &
+linera -w1 service --port 8080 &
+linera -w2 service --port 8081 &
 sleep 1
 ```
 

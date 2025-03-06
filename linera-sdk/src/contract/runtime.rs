@@ -165,29 +165,6 @@ where
     pub fn assert_data_blob_exists(&mut self, hash: DataBlobHash) {
         base_wit::assert_data_blob_exists(hash.0.into())
     }
-
-    /// Start a microchain.
-    pub fn microchain_start(&mut self, chain_state: Vec<u8>) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        todo!()
-        // base_wit::microchain_start(&chain_state)
-    }
-
-    /// Prove a microchain transition.
-    pub fn microchain_transition(
-        &mut self,
-        chain_proof_hash: DataBlobHash,
-        chain_proofs: Vec<u8>,
-        chain_state: Vec<u8>,
-        zstore_view: Vec<u8>,
-    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        todo!()
-        // base_wit::microchain_transition(
-        //     chain_proof_hash.0.into(),
-        //     &chain_proofs,
-        //     &chain_state,
-        //     &zstore_view,
-        // )
-    }
 }
 
 impl<Application> ContractRuntime<Application>
@@ -374,6 +351,27 @@ where
     /// Returns the round in which this block was validated.
     pub fn validation_round(&mut self) -> Option<u32> {
         contract_wit::validation_round()
+    }
+
+    /// Start a microchain.
+    pub fn microchain_start(&mut self, chain_state: Vec<u8>) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        contract_wit::microchain_start(&chain_state)
+    }
+
+    /// Prove a microchain transition.
+    pub fn microchain_transition(
+        &mut self,
+        chain_proof_hash: DataBlobHash,
+        chain_proofs: Vec<u8>,
+        chain_state: Vec<u8>,
+        zstore_view: Vec<u8>,
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        contract_wit::microchain_transition(
+            chain_proof_hash.0.into(),
+            &chain_proofs,
+            &chain_state,
+            &zstore_view,
+        )
     }
 }
 
