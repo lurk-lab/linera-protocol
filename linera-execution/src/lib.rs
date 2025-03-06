@@ -763,6 +763,21 @@ pub trait ContractRuntime: BaseRuntime {
 
     /// Writes a batch of changes.
     fn write_batch(&mut self, batch: Batch) -> Result<(), ExecutionError>;
+
+    /// Start a Lurk Microchain.
+    fn microchain_start(
+        &mut self,
+        chain_state: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError>;
+
+    /// Apply a Lurk Microchain transition.
+    fn microchain_transition(
+        &mut self,
+        chain_proof_hash: CryptoHash,
+        chain_proofs: Vec<u8>,
+        chain_state: Vec<u8>,
+        zstore_view: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError>;
 }
 
 /// An operation to be executed in a block.

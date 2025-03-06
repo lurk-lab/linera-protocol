@@ -25,10 +25,24 @@ FROM rust:1.74-slim-bookworm AS builder
 ARG git_commit
 ARG target
 
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    protobuf-compiler \
-    clang
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /var/lib/apt/lists/partial && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config && \
+    pkg-config --version && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        protobuf-compiler \
+        libprotobuf-dev \
+        protobuf-compiler-grpc \
+        clang \
+        libssl-dev \
+        build-essential \
+        perl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Verify pkg-config can find OpenSSL
+RUN pkg-config --libs --cflags openssl
 
 COPY examples examples
 COPY linera-base linera-base

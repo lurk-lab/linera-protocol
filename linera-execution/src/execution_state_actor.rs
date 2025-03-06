@@ -357,6 +357,23 @@ where
                 self.system.assert_blob_exists(blob_id).await?;
                 callback.respond(self.system.blob_used(None, blob_id).await?)
             }
+
+            MicrochainStart {
+                chain_state,
+                callback,
+            } => callback.respond(self.system.microchain_start(chain_state).await?),
+
+            MicrochainTransition {
+                chain_proof_id,
+                chain_proofs,
+                chain_state,
+                zstore_view,
+                callback,
+            } => callback.respond(
+                self.system
+                    .microchain_transition(chain_proof_id, chain_proofs, chain_state, zstore_view)
+                    .await?,
+            ),
         }
 
         Ok(())
@@ -541,5 +558,20 @@ pub enum ExecutionRequest {
         blob_id: BlobId,
         #[debug(skip)]
         callback: Sender<bool>,
+    },
+
+    MicrochainStart {
+        chain_state: Vec<u8>,
+        #[debug(skip)]
+        callback: Sender<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    },
+
+    MicrochainTransition {
+        chain_proof_id: BlobId,
+        chain_proofs: Vec<u8>,
+        chain_state: Vec<u8>,
+        zstore_view: Vec<u8>,
+        #[debug(skip)]
+        callback: Sender<(Vec<u8>, Vec<u8>, Vec<u8>)>,
     },
 }

@@ -20,6 +20,8 @@ interface contract-runtime-api {
     consume-fuel: func(fuel: u64);
     validation-round: func() -> option<u32>;
     write-batch: func(operations: list<write-operation>);
+    microchain-start: func(chain-state: list<u8>) -> tuple<list<u8>, list<u8>, list<u8>>;
+    microchain-transition: func(chain-proof-hash: crypto-hash, chain-proofs: list<u8>, chain-state: list<u8>, zstore-view: list<u8>) -> tuple<list<u8>, list<u8>, list<u8>>;
 
     record account {
         chain-id: chain-id,

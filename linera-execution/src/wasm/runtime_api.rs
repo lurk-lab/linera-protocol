@@ -631,6 +631,33 @@ where
             .write_batch(Batch { operations })
             .map_err(|error| RuntimeError::Custom(error.into()))
     }
+
+    /// Returns the round in which this block was validated.
+    fn microchain_start(
+        caller: &mut Caller,
+        chain_state: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), RuntimeError> {
+        caller
+            .user_data_mut()
+            .runtime_mut()
+            .microchain_start(chain_state)
+            .map_err(|error| RuntimeError::Custom(error.into()))
+    }
+
+    /// Writes a batch of `operations` to storage.
+    fn microchain_transition(
+        caller: &mut Caller,
+        chain_proof_hash: CryptoHash,
+        chain_proofs: Vec<u8>,
+        chain_state: Vec<u8>,
+        zstore_view: Vec<u8>,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), RuntimeError> {
+        caller
+            .user_data_mut()
+            .runtime_mut()
+            .microchain_transition(chain_proof_hash, chain_proofs, chain_state, zstore_view)
+            .map_err(|error| RuntimeError::Custom(error.into()))
+    }
 }
 
 /// An implementation of the system API made available to services.
