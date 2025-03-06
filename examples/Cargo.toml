@@ -15,7 +15,6 @@ members = [
     "non-fungible",
     "rfq",
     "social",
-    "microchain",
     "lurk-microchain",
     "mwe",
 ]
