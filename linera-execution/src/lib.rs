@@ -39,7 +39,7 @@ use linera_base::{
     crypto::{BcsHashable, CryptoHash},
     data_types::{
         Amount, ApplicationPermissions, ArithmeticError, Blob, BlockHeight, DecompressionError,
-        Resources, SendMessageRequest, Timestamp, UserApplicationDescription,
+        LurkMicrochainData, Resources, SendMessageRequest, Timestamp, UserApplicationDescription,
     },
     doc_scalar, hex_debug, http,
     identifiers::{
@@ -763,6 +763,19 @@ pub trait ContractRuntime: BaseRuntime {
 
     /// Writes a batch of changes.
     fn write_batch(&mut self, batch: Batch) -> Result<(), ExecutionError>;
+
+    /// Start a Lurk Microchain.
+    fn microchain_start(
+        &mut self,
+        chain_state: Vec<u8>,
+    ) -> Result<LurkMicrochainData, ExecutionError>;
+
+    /// Apply a Lurk Microchain transition.
+    fn microchain_transition(
+        &mut self,
+        chain_proof_hash: CryptoHash,
+        data: LurkMicrochainData,
+    ) -> Result<LurkMicrochainData, ExecutionError>;
 }
 
 /// An operation to be executed in a block.
