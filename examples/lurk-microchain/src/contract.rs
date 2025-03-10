@@ -1,4 +1,4 @@
-// Copyright (c) Zefchain Labs, Inc.
+// Copyright (c) Lurk Lab Systems Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -133,9 +133,7 @@ impl LurkMicrochainContract {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Message {
-    /// Initializes a game. Sent from the main chain to a temporary chain.
     Start {
-        /// The players.
         accounts: [Owner; 2],
         chain_state: DataBlobHash,
     },

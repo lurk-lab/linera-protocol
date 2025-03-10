@@ -1,4 +1,4 @@
-// Copyright (c) Zefchain Labs, Inc.
+// Copyright (c) Lurk Lab Systems Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 #![cfg_attr(target_arch = "wasm32", no_main)]

@@ -1,4 +1,4 @@
-// Copyright (c) Zefchain Labs, Inc.
+// Copyright (c) Lurk Lab Systems Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::BTreeSet;
@@ -10,7 +10,7 @@ use linera_sdk::{
 };
 use serde::{Deserialize, Serialize};
 
-/// The IDs of a temporary chain for a single game of Hex.
+/// The IDs of a temporary chain for a Lurk Microchain.
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, SimpleObject)]
 pub struct MicrochainId {
     /// The ID of the `OpenChain` message that created the chain.
@@ -23,14 +23,14 @@ pub struct MicrochainId {
 #[derive(RootView, SimpleObject)]
 #[view(context = "ViewStorageContext")]
 pub struct LurkMicrochainState {
-    /// The `Owner`s controlling players `One` and `Two`.
+    /// The `Owner`s that can interact with this Lurk Microchain.
     pub owners: RegisterView<Option<[Owner; 2]>>,
-    /// Temporary chains for individual games, by player.
+    /// Temporary chains for individual Lurk Microchains.
     pub chains: MapView<Owner, BTreeSet<MicrochainId>>,
     /// All the proofs currently on chain.
     pub chain_proofs: RegisterView<Vec<u8>>,
     /// The program state.
     pub chain_state: RegisterView<Vec<u8>>,
-    /// The zstore state
+    /// The zstore state.
     pub zstore_view: RegisterView<Vec<u8>>,
 }

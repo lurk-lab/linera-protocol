@@ -247,8 +247,8 @@ crowd-funding = { path = "./examples/crowd-funding" }
 matching-engine = { path = "./examples/matching-engine" }
 social = { path = "./examples/social" }
 amm = { path = "./examples/amm" }
-proof-verifier = { path = "./examples/proof-verifier" }
-mwe = { path = "./examples/mwe" }
+
+lurk-microchain = { path = "./examples/lurk-microchain" }
 
 [profile.release]
 lto = "thin"

@@ -19,7 +19,8 @@ use custom_debug_derive::Debug;
 use linera_base::{
     crypto::CryptoHash,
     data_types::{
-        Amount, ApplicationPermissions, ArithmeticError, BlobContent, OracleResponse, Timestamp,
+        Amount, ApplicationPermissions, ArithmeticError, BlobContent, LurkMicrochainData,
+        OracleResponse, Timestamp,
     },
     ensure, hex_debug,
     identifiers::{
@@ -1146,7 +1147,7 @@ where
         &mut self,
         chain_state: Vec<u8>,
         // id_secret: Vec<u32>,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), SystemExecutionError> {
+    ) -> Result<LurkMicrochainData, SystemExecutionError> {
         let (_toplevel, mut zstore, _) = build_lurk_toplevel(Lang::empty());
         let _empty_env = zstore.intern_empty_env();
 
@@ -1183,16 +1184,24 @@ where
         let zstore_view = bincode::serialize(&zstore_view)
             .map_err(|_| SystemExecutionError::SerializationFailed("zstore_view".into()))?;
 
-        return Ok((chain_proofs, chain_state, zstore_view));
+        let data = LurkMicrochainData {
+            chain_proofs,
+            chain_state,
+            zstore_view,
+        };
+        Ok(data)
     }
 
     pub async fn microchain_transition(
         &mut self,
         chain_proof_id: BlobId,
-        chain_proofs: Vec<u8>,
-        chain_state: Vec<u8>,
-        zstore_view: Vec<u8>,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), SystemExecutionError> {
+        data: LurkMicrochainData,
+    ) -> Result<LurkMicrochainData, SystemExecutionError> {
+        let LurkMicrochainData {
+            chain_proofs,
+            chain_state,
+            zstore_view,
+        } = data;
         let chain_proof_bytes = self.read_blob_content(chain_proof_id).await?.into_bytes();
         let chain_proof: ChainProof = bincode::deserialize_from(&chain_proof_bytes[..])
             .map_err(|_| SystemExecutionError::DeserializationFailed("chain_proof".into()))?;
@@ -1302,7 +1311,12 @@ where
         // );
         // dump_proof_index(&id, &proof_index)?;
 
-        return Ok((chain_proofs, next_chain_state, zstore_view));
+        let data = LurkMicrochainData {
+            chain_proofs,
+            chain_state: next_chain_state,
+            zstore_view,
+        };
+        Ok(data)
     }
 
     async fn check_bytecode_blobs(

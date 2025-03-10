@@ -5704,15 +5704,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "defc4c55412d89136f966bbb339008b474350e5e6e78d2714439c386b3137a03"
 
 [[package]]
-name = "mwe"
-version = "0.1.0"
-dependencies = [
- "linera-sdk",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "native-fungible"
 version = "0.1.0"
 dependencies = [

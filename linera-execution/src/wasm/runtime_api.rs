@@ -5,7 +5,10 @@ use std::{any::Any, collections::HashMap, marker::PhantomData};
 
 use linera_base::{
     crypto::CryptoHash,
-    data_types::{Amount, ApplicationPermissions, BlockHeight, SendMessageRequest, Timestamp},
+    data_types::{
+        Amount, ApplicationPermissions, BlockHeight, LurkMicrochainData, SendMessageRequest,
+        Timestamp,
+    },
     http,
     identifiers::{
         Account, AccountOwner, ApplicationId, ChainId, ChannelName, MessageId, Owner, StreamName,
@@ -633,10 +636,11 @@ where
     }
 
     /// Returns the round in which this block was validated.
+    #[allow(clippy::type_complexity)]
     fn microchain_start(
         caller: &mut Caller,
         chain_state: Vec<u8>,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), RuntimeError> {
+    ) -> Result<LurkMicrochainData, RuntimeError> {
         caller
             .user_data_mut()
             .runtime_mut()
@@ -648,14 +652,12 @@ where
     fn microchain_transition(
         caller: &mut Caller,
         chain_proof_hash: CryptoHash,
-        chain_proofs: Vec<u8>,
-        chain_state: Vec<u8>,
-        zstore_view: Vec<u8>,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), RuntimeError> {
+        data: LurkMicrochainData,
+    ) -> Result<LurkMicrochainData, RuntimeError> {
         caller
             .user_data_mut()
             .runtime_mut()
-            .microchain_transition(chain_proof_hash, chain_proofs, chain_state, zstore_view)
+            .microchain_transition(chain_proof_hash, data)
             .map_err(|error| RuntimeError::Custom(error.into()))
     }
 }

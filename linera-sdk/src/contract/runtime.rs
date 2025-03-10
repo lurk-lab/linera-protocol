@@ -6,7 +6,8 @@
 use linera_base::{
     abi::{ContractAbi, ServiceAbi},
     data_types::{
-        Amount, ApplicationPermissions, BlockHeight, Resources, SendMessageRequest, Timestamp,
+        Amount, ApplicationPermissions, BlockHeight, LurkMicrochainData, Resources,
+        SendMessageRequest, Timestamp,
     },
     http,
     identifiers::{
@@ -354,24 +355,19 @@ where
     }
 
     /// Start a microchain.
-    pub fn microchain_start(&mut self, chain_state: Vec<u8>) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        contract_wit::microchain_start(&chain_state)
+    pub fn microchain_start(&mut self, chain_state: Vec<u8>) -> LurkMicrochainData {
+        let data = contract_wit::microchain_start(&chain_state);
+        data.into()
     }
 
     /// Prove a microchain transition.
     pub fn microchain_transition(
         &mut self,
         chain_proof_hash: DataBlobHash,
-        chain_proofs: Vec<u8>,
-        chain_state: Vec<u8>,
-        zstore_view: Vec<u8>,
-    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        contract_wit::microchain_transition(
-            chain_proof_hash.0.into(),
-            &chain_proofs,
-            &chain_state,
-            &zstore_view,
-        )
+        data: LurkMicrochainData,
+    ) -> LurkMicrochainData {
+        let data = contract_wit::microchain_transition(chain_proof_hash.0.into(), &data.into());
+        data.into()
     }
 }
 

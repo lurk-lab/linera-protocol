@@ -1,4 +1,4 @@
-// Copyright (c) Zefchain Labs, Inc.
+// Copyright (c) Lurk Lab Systems Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use async_graphql::{Request, Response};
@@ -18,7 +18,6 @@ pub enum Operation {
         chain_proof: DataBlobHash,
     },
     Start {
-        /// The public keys of player 1 and 2, respectively.
         accounts: [Owner; 2],
         chain_state: DataBlobHash,
     },

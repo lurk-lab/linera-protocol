@@ -896,22 +896,6 @@ where
     pub fn validation_round(&mut self) -> Option<u32> {
         self.round
     }
-
-    /// TODO: What is this?
-    pub fn microchain_start(&mut self, _chain_state: Vec<u8>) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        todo!()
-    }
-
-    /// TODO: What is this?
-    pub fn microchain_transition(
-        &mut self,
-        _chain_proof_hash: DataBlobHash,
-        _chain_proofs: Vec<u8>,
-        _chain_state: Vec<u8>,
-        _zstore_view: Vec<u8>,
-    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        todo!()
-    }
 }
 
 /// A type alias for the handler for cross-application calls.

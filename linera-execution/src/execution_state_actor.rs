@@ -13,7 +13,7 @@ use linera_base::prometheus_util::{
     exponential_bucket_latencies, register_histogram_vec, MeasureLatency as _,
 };
 use linera_base::{
-    data_types::{Amount, ApplicationPermissions, BlobContent, Timestamp},
+    data_types::{Amount, ApplicationPermissions, BlobContent, LurkMicrochainData, Timestamp},
     hex_debug, hex_vec_debug, http,
     identifiers::{Account, AccountOwner, BlobId, MessageId, Owner},
     ownership::ChainOwnership,
@@ -365,13 +365,11 @@ where
 
             MicrochainTransition {
                 chain_proof_id,
-                chain_proofs,
-                chain_state,
-                zstore_view,
+                data,
                 callback,
             } => callback.respond(
                 self.system
-                    .microchain_transition(chain_proof_id, chain_proofs, chain_state, zstore_view)
+                    .microchain_transition(chain_proof_id, data)
                     .await?,
             ),
         }
@@ -563,15 +561,13 @@ pub enum ExecutionRequest {
     MicrochainStart {
         chain_state: Vec<u8>,
         #[debug(skip)]
-        callback: Sender<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+        callback: Sender<LurkMicrochainData>,
     },
 
     MicrochainTransition {
         chain_proof_id: BlobId,
-        chain_proofs: Vec<u8>,
-        chain_state: Vec<u8>,
-        zstore_view: Vec<u8>,
+        data: LurkMicrochainData,
         #[debug(skip)]
-        callback: Sender<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+        callback: Sender<LurkMicrochainData>,
     },
 }

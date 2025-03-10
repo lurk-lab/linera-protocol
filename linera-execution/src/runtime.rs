@@ -12,8 +12,8 @@ use custom_debug_derive::Debug;
 use linera_base::{
     crypto::CryptoHash,
     data_types::{
-        Amount, ApplicationPermissions, ArithmeticError, BlockHeight, OracleResponse, Resources,
-        SendMessageRequest, Timestamp,
+        Amount, ApplicationPermissions, ArithmeticError, BlockHeight, LurkMicrochainData,
+        OracleResponse, Resources, SendMessageRequest, Timestamp,
     },
     ensure, http,
     identifiers::{
@@ -1537,7 +1537,7 @@ impl ContractRuntime for ContractSyncRuntimeHandle {
     fn microchain_start(
         &mut self,
         chain_state: Vec<u8>,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError> {
+    ) -> Result<LurkMicrochainData, ExecutionError> {
         let this = self.inner();
         this.execution_state_sender
             .send_request(|callback| ExecutionRequest::MicrochainStart {
@@ -1550,10 +1550,8 @@ impl ContractRuntime for ContractSyncRuntimeHandle {
     fn microchain_transition(
         &mut self,
         chain_proof_hash: CryptoHash,
-        chain_proofs: Vec<u8>,
-        chain_state: Vec<u8>,
-        zstore_view: Vec<u8>,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), ExecutionError> {
+        data: LurkMicrochainData,
+    ) -> Result<LurkMicrochainData, ExecutionError> {
         let mut this = self.inner();
         let chain_proof_id = BlobId::new(chain_proof_hash, BlobType::Data);
         this.transaction_tracker
@@ -1561,9 +1559,7 @@ impl ContractRuntime for ContractSyncRuntimeHandle {
         this.execution_state_sender
             .send_request(|callback| ExecutionRequest::MicrochainTransition {
                 chain_proof_id,
-                chain_proofs,
-                chain_state,
-                zstore_view,
+                data,
                 callback,
             })?
             .recv_response()

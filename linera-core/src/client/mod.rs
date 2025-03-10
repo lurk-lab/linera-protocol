@@ -599,7 +599,7 @@ pub enum ChainClientError {
     CommitteeDeprecationError,
 
     #[error("Protocol error within chain client: {0}")]
-    ProtocolError(String),
+    ProtocolError(&'static str),
 
     #[error("No key available to interact with chain {0}")]
     CannotFindKeyForChain(ChainId),
@@ -1196,11 +1196,9 @@ where
             self.options.grace_period,
         )
         .await?;
-        let value_hash = value.hash();
-        let action_round = action.round();
         ensure!(
-            (votes_hash, votes_round) == (value_hash, action_round),
-            ChainClientError::ProtocolError(format!("Unexpected response from validators. Expected: ({votes_hash}, {votes_round}) == ({value_hash}, {action_round})"))
+            (votes_hash, votes_round) == (value.hash(), action.round()),
+            ChainClientError::ProtocolError("Unexpected response from validators")
         );
         // Certificate is valid because
         // * `communicate_with_quorum` ensured a sufficient "weight" of
@@ -1212,7 +1210,7 @@ where
             })?
             .with_value(value)
             .ok_or_else(|| {
-                ChainClientError::ProtocolError("A quorum voted for an unexpected value".into())
+                ChainClientError::ProtocolError("A quorum voted for an unexpected value")
             })?;
         Ok(certificate)
     }
