@@ -268,6 +268,8 @@ social = { path = "./examples/social" }
 
 lurk-microchain = { path = "./examples/lurk-microchain" }
 
+lurk-microchain = { path = "./examples/lurk-microchain" }
+
 [profile.release]
 lto = "thin"
 debug = true
