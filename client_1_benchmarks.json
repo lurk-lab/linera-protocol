@@ -1,0 +1,105 @@
+{
+  "clients": [
+    {
+      "client_id": 1,
+      "operations": {
+        "verify": {
+          "total_time": {
+            "secs": 68,
+            "nanos": 867819708
+          },
+          "count": 3,
+          "mean_time": {
+            "secs": 22,
+            "nanos": 955939902
+          },
+          "min_time": {
+            "secs": 15,
+            "nanos": 442012209
+          },
+          "max_time": {
+            "secs": 36,
+            "nanos": 663408583
+          }
+        },
+        "data transfer": {
+          "total_time": {
+            "secs": 4,
+            "nanos": 706466999
+          },
+          "count": 4,
+          "mean_time": {
+            "secs": 1,
+            "nanos": 176616749
+          },
+          "min_time": {
+            "secs": 0,
+            "nanos": 500050333
+          },
+          "max_time": {
+            "secs": 1,
+            "nanos": 818118375
+          }
+        },
+        "proof": {
+          "total_time": {
+            "secs": 1,
+            "nanos": 148087084
+          },
+          "count": 3,
+          "mean_time": {
+            "secs": 0,
+            "nanos": 382695694
+          },
+          "min_time": {
+            "secs": 0,
+            "nanos": 359133709
+          },
+          "max_time": {
+            "secs": 0,
+            "nanos": 420655625
+          }
+        },
+        "start": {
+          "total_time": {
+            "secs": 2,
+            "nanos": 414412875
+          },
+          "count": 2,
+          "mean_time": {
+            "secs": 1,
+            "nanos": 207206437
+          },
+          "min_time": {
+            "secs": 1,
+            "nanos": 147582542
+          },
+          "max_time": {
+            "secs": 1,
+            "nanos": 266830333
+          }
+        },
+        "service": {
+          "total_time": {
+            "secs": 1,
+            "nanos": 2506000
+          },
+          "count": 1,
+          "mean_time": {
+            "secs": 1,
+            "nanos": 2506000
+          },
+          "min_time": {
+            "secs": 1,
+            "nanos": 2506000
+          },
+          "max_time": {
+            "secs": 1,
+            "nanos": 2506000
+          }
+        }
+      }
+    }
+  ],
+  "total_clients": 1
+}
