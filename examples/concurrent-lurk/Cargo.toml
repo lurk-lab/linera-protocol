@@ -9,8 +9,8 @@ async-graphql.workspace = true
 linera-sdk.workspace = true
 log.workspace = true
 serde.workspace = true
-chrono = "0.4"
-regex = "1.5"
+# chrono = "0.4"
+# regex = "1.5"
 serde_json = "1.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
@@ -30,6 +30,6 @@ path = "src/contract.rs"
 name = "concurrent_lurk_service"
 path = "src/service.rs"
 
-[[bin]]
-name = "parse_logs"
-path = "src/bin/parse_logs.rs"
+# [[bin]]
+# name = "parse_logs"
+# path = "src/bin/parse_logs.rs"
