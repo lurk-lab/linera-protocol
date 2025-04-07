@@ -1,18 +1,10 @@
 !(set-env (letrec 
             ((pong (lambda (pid) 
-                     (cons '(:receive) 
-                            (lambda (msg) 
-                              (if (eq (car msg) :ping) 
-                                  (begin (emit (list "got ping" msg)) (cons (list :send (car (cdr msg)) (list :pong pid)) (lambda nil (pong pid)))) 
-                                  (pong pid)))))) 
-             (ping (lambda (pid) 
-                     (cons '(:spawn pong) 
-                            (lambda (other-pid) 
-                              (cons (list :send other-pid (list :ping pid)) 
-                                    (lambda nil 
-                                      (cons '(:receive) 
-                                             (lambda (msg) (begin (if (eq (car msg) :pong) (emit (list "got pong" msg))) (cons nil nil))))))))))) 
-            (current-env)))
+                      (cons '(:receive) 
+                            (lambda (msg) (if (eq (car msg) :ping) (begin (emit (list "got ping" msg)) (let ((other (car (cdr msg))) (n (car (cdr (cdr msg))))) (cons (list :send other (list :pong pid (- n 1))) (lambda nil (pong pid))))) (pong pid)))))) 
+              (ping (lambda (pid n) (cons '(:spawn pong) (lambda (other-pid) (cons (list :send other-pid (list :ping pid n)) (lambda nil (ping-inner pid))))))) 
+              (ping-inner (lambda (pid) (cons '(:receive) (lambda (msg) (let ((other (car (cdr msg))) (n (car (cdr (cdr msg))))) (if (if (eq (car msg) :pong) (if (eq n 0) nil t) nil) (begin (emit (list "got pong" msg)) (cons (list :send other (list :ping pid n)) (lambda nil (ping-inner pid)))) (cons nil nil)))))))) 
+    (current-env)))
 
 ; !(defq app-id !(linera-start ping-chain-id contract service))
 

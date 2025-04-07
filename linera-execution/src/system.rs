@@ -1009,8 +1009,8 @@ where
         let chain_proof_bytes = self.read_blob_content(chain_proof_id).await?.into_bytes();
         let chain_proof: ChainProof = bincode::deserialize_from(&chain_proof_bytes[..])
             .map_err(|_| ExecutionError::DeserializationFailed("chain_proof".into()))?;
-        let mut chain_proofs: Vec<OpaqueChainProof> = bincode::deserialize_from(&chain_proofs[..])
-            .map_err(|_| ExecutionError::DeserializationFailed("chain_proofs".into()))?;
+        // let mut chain_proofs: Vec<OpaqueChainProof> = bincode::deserialize_from(&chain_proofs[..])
+        //     .map_err(|_| ExecutionError::DeserializationFailed("chain_proofs".into()))?;
         let chain_state: ChainState = bincode::deserialize_from(&chain_state[..])
             .map_err(|_| ExecutionError::DeserializationFailed("chain_state".into()))?;
         let zstore_view: ZStoreView<BabyBear> = bincode::deserialize_from(&zstore_view[..])
@@ -1083,15 +1083,15 @@ where
         // everything went okay... transition to the next state
 
         // store new proof
-        chain_proofs.push(OpaqueChainProof {
-            crypto_proof: machine_proof.into(),
-            call_args: call_args_zptr,
-            next_chain_result: next_chain_result_zptr,
-            next_callable: next_callable_zptr,
-        });
+        // chain_proofs.push(OpaqueChainProof {
+        //     crypto_proof: machine_proof.into(),
+        //     call_args: call_args_zptr,
+        //     next_chain_result: next_chain_result_zptr,
+        //     next_callable: next_callable_zptr,
+        // });
 
-        let chain_proofs = bincode::serialize(&chain_proofs)
-            .map_err(|_| ExecutionError::SerializationFailed("chain_proofs".into()))?;
+        // let chain_proofs = bincode::serialize(&chain_proofs)
+        //     .map_err(|_| ExecutionError::SerializationFailed("chain_proofs".into()))?;
 
         let next_chain_state = ChainState {
             chain_result: next_chain_result,

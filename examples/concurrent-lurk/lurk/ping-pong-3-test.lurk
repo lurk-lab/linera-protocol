@@ -1,0 +1,46 @@
+; !(load "examples/concurrent-lurk/ping-pong.lurk")
+!(load "ping-pong.lurk")
+
+!(def contract "examples/target/wasm32-unknown-unknown/release/concurrent_lurk_contract.wasm")
+!(def service "examples/target/wasm32-unknown-unknown/release/concurrent_lurk_service.wasm")
+
+!(def port !(env-var "PORT"))
+!(def ping-chain-id !(env-var "PING_CHAIN"))
+!(def owner !(env-var "OWNER"))
+
+!(defq app-id !(linera-start ping-chain-id contract service))
+!(linera-service port)
+
+!(def n 3)
+!(def ping1 (ping ping-chain-id n))
+!(microchain-start port ping-chain-id app-id owner ping1)
+
+!(def pong-chain-id !(env-var "PONG_CHAIN"))
+
+!(def pong3 (pong pong-chain-id))
+!(microchain-start port pong-chain-id app-id owner pong3)
+
+!(defq ping2 !(microchain-transition port ping-chain-id app-id ping1 pong-chain-id))
+!(defq ping3 !(microchain-transition port ping-chain-id app-id ping2))
+
+; i = 2
+!(defq pong4 !(microchain-transition port pong-chain-id app-id pong3 (car (cdr (cdr (car ping2))))))
+!(defq pong5 !(microchain-transition port pong-chain-id app-id pong4))
+; i = 2
+!(defq ping4 !(microchain-transition port ping-chain-id app-id ping3 (car (cdr (cdr (car pong4))))))
+!(defq ping5 !(microchain-transition port ping-chain-id app-id ping4))
+
+; i = 1
+!(defq pong6 !(microchain-transition port pong-chain-id app-id pong5 (car (cdr (cdr (car ping4))))))
+!(defq pong7 !(microchain-transition port pong-chain-id app-id pong6))
+; i = 1
+!(defq ping6 !(microchain-transition port ping-chain-id app-id ping5 (car (cdr (cdr (car pong6))))))
+!(defq ping7 !(microchain-transition port ping-chain-id app-id ping6))
+
+; i = 0
+!(defq pong8 !(microchain-transition port pong-chain-id app-id pong7 (car (cdr (cdr (car ping6))))))
+!(defq pong9 !(microchain-transition port pong-chain-id app-id pong8))
+; i = 0
+!(defq ping8 !(microchain-transition port ping-chain-id app-id ping7 (car (cdr (cdr (car pong8))))))
+
+

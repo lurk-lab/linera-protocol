@@ -5,10 +5,15 @@
 
 # Default number of clients to run
 NUM_CLIENTS=${1:-3}
+PING_PONG_N=${2:-5}
 
 # Create a temporary directory for wallets and storage
 LINERA_TMP_DIR=$(mktemp -d)
 echo "Using temporary directory: $LINERA_TMP_DIR"
+
+LURK_DIR="./lurk"
+# Generate the Lurk testing script
+(cd "examples/concurrent-lurk" && cargo run --features native --bin generate_ping_pong ./lurk $PING_PONG_N)
 
 # Create timing log file
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
@@ -18,7 +23,7 @@ LOG_DIR="./examples/concurrent-lurk/run_e2e_${TIMESTAMP}"
 SERVER_LOG="$LOG_DIR/server.log"
 
 TIMING_LOG="$LOG_DIR/lurk_load_times.txt"
-echo "# Lurk Load Times (seconds)" > $TIMING_LOG
+echo "# End-to-end Times (seconds)" > $TIMING_LOG
 echo "# Client_ID | Start_Time | End_Time | Duration" >> $TIMING_LOG
 
 # Create a progress tracking file
@@ -82,7 +87,7 @@ run_client() {
         # Time lurk loading - only part we care about timing
         echo "Starting lurk load for client $client_id..."
         START_TIME=$(date +%s.%N)
-        RUST_BACKTRACE=1 LOG_DIR="$LOG_DIR" lurk load examples/concurrent-lurk/ping-pong-test.lurk --linera --with-wallet ${client_id}
+        RUST_BACKTRACE=1 LOG_DIR="$LOG_DIR" lurk load examples/concurrent-lurk/$LURK_DIR/ping-pong-$PING_PONG_N-test.lurk --linera --with-wallet ${client_id}
         END_TIME=$(date +%s.%N)
         DURATION=$(echo "$END_TIME - $START_TIME" | bc)
         echo "$client_id | $START_TIME | $END_TIME | $DURATION" >> $TIMING_LOG
@@ -136,7 +141,10 @@ if [ -n "$TIMES" ]; then
     echo "Average time: $AVG seconds" >> $TIMING_LOG
 fi
 
-cargo run --bin parse_logs $LOG_DIR/server.log $LOG_DIR/server_benchmarks.md 0
+# Generate server logs
+echo ""
+echo "Generating server logs..."
+(cd examples/concurrent-lurk && cargo run --features native --bin parse_logs run_e2e_${TIMESTAMP})
 
 # Collect and display results
 echo ""

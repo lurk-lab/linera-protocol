@@ -1,172 +1,168 @@
-// use chrono::{DateTime, Utc};
-// use regex::Regex;
-// use serde::Deserialize;
-// use serde::Serialize;
-// use std::collections::HashMap;
-// use std::env;
-// use std::fs;
-// use std::time::Duration;
+#![cfg(not(target_arch = "wasm32"))]
 
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct TimingStats {
-//     pub total_time: Duration,
-//     pub count: usize,
-//     pub mean_time: Duration,
-//     pub min_time: Duration,
-//     pub max_time: Duration,
-// }
+use chrono::{DateTime, Utc};
+use regex::Regex;
+use serde::Deserialize;
+use serde::Serialize;
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::time::Duration;
 
-// impl TimingStats {
-//     fn new() -> Self {
-//         Self {
-//             total_time: Duration::new(0, 0),
-//             count: 0,
-//             mean_time: Duration::new(0, 0),
-//             min_time: Duration::MAX,
-//             max_time: Duration::new(0, 0),
-//         }
-//     }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimingStats {
+    pub total_time: Duration,
+    pub count: usize,
+    pub mean_time: Duration,
+    pub min_time: Duration,
+    pub max_time: Duration,
+}
 
-//     fn add_timing(&mut self, duration: Duration) {
-//         self.total_time += duration;
-//         self.count += 1;
+impl TimingStats {
+    fn new() -> Self {
+        Self {
+            total_time: Duration::new(0, 0),
+            count: 0,
+            mean_time: Duration::new(0, 0),
+            min_time: Duration::MAX,
+            max_time: Duration::new(0, 0),
+        }
+    }
 
-//         if duration < self.min_time {
-//             self.min_time = duration;
-//         }
+    fn add_timing(&mut self, duration: Duration) {
+        self.total_time += duration;
+        self.count += 1;
 
-//         if duration > self.max_time {
-//             self.max_time = duration;
-//         }
+        if duration < self.min_time {
+            self.min_time = duration;
+        }
 
-//         self.mean_time = self.total_time / self.count as u32;
-//     }
-// }
+        if duration > self.max_time {
+            self.max_time = duration;
+        }
 
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct ClientBenchmark {
-//     pub client_id: usize,
-//     pub operations: HashMap<String, TimingStats>,
-// }
+        self.mean_time = self.total_time / self.count as u32;
+    }
+}
 
-// impl ClientBenchmark {
-//     fn new(client_id: usize) -> Self {
-//         Self {
-//             client_id,
-//             operations: HashMap::new(),
-//         }
-//     }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientBenchmark {
+    pub client_id: usize,
+    pub operations: HashMap<String, TimingStats>,
+}
 
-//     pub fn generate_markdown_table(&self) -> String {
-//         let mut markdown = String::new();
+impl ClientBenchmark {
+    fn new(client_id: usize) -> Self {
+        Self {
+            client_id,
+            operations: HashMap::new(),
+        }
+    }
 
-//         // Table header
-//         markdown.push_str("| Operation | Total Time | Count | Mean Time | Min Time | Max Time |\n");
-//         markdown.push_str("|-----------|------------|-------|-----------|----------|----------|\n");
+    pub fn generate_markdown_table(&self) -> String {
+        let mut markdown = String::new();
 
-//         // Table rows
-//         let mut sorted_ops: Vec<(&String, &TimingStats)> = self.operations.iter().collect();
-//         sorted_ops.sort_by(|a, b| a.0.cmp(b.0));
+        // Table header
+        markdown.push_str("| Operation | Total Time | Count | Mean Time | Min Time | Max Time |\n");
+        markdown.push_str("|-----------|------------|-------|-----------|----------|----------|\n");
 
-//         for (operation, stats) in sorted_ops {
-//             markdown.push_str(&format!(
-//                 "| {} | {:.2}s | {} | {:.2}s | {:.2}s | {:.2}s |\n",
-//                 operation,
-//                 stats.total_time.as_secs_f64(),
-//                 stats.count,
-//                 stats.mean_time.as_secs_f64(),
-//                 stats.min_time.as_secs_f64(),
-//                 stats.max_time.as_secs_f64()
-//             ));
-//         }
+        // Table rows
+        let mut sorted_ops: Vec<(&String, &TimingStats)> = self.operations.iter().collect();
+        sorted_ops.sort_by(|a, b| a.0.cmp(b.0));
 
-//         markdown
-//     }
-// }
+        for (operation, stats) in sorted_ops {
+            markdown.push_str(&format!(
+                "| {} | {:.2}s | {} | {:.2}s | {:.2}s | {:.2}s |\n",
+                operation,
+                stats.total_time.as_secs_f64(),
+                stats.count,
+                stats.mean_time.as_secs_f64(),
+                stats.min_time.as_secs_f64(),
+                stats.max_time.as_secs_f64()
+            ));
+        }
 
-// fn parse_logs_and_update_benchmark(
-//     log_content: &str,
-//     benchmark: &mut ClientBenchmark,
-// ) -> Result<(), String> {
-//     let timestamp_pattern =
-//         Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s+INFO.*>>> (START|END) (\w+)")
-//             .map_err(|e| e.to_string())?;
+        markdown
+    }
+}
 
-//     let mut operation_start_times: HashMap<String, DateTime<Utc>> = HashMap::new();
+fn parse_logs_and_update_benchmark(
+    log_content: &str,
+    benchmark: &mut ClientBenchmark,
+) -> Result<(), String> {
+    let timestamp_pattern =
+        Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s+INFO.*>>> (START|END) (\w+)")
+            .map_err(|e| e.to_string())?;
 
-//     for line in log_content.lines() {
-//         if let Some(captures) = timestamp_pattern.captures(line) {
-//             let timestamp_str = captures.get(1).unwrap().as_str();
-//             let action = captures.get(2).unwrap().as_str();
-//             let operation = captures.get(3).unwrap().as_str().to_string();
+    let mut operation_start_times: HashMap<String, DateTime<Utc>> = HashMap::new();
 
-//             let timestamp = DateTime::parse_from_rfc3339(timestamp_str)
-//                 .map_err(|e| format!("Failed to parse timestamp: {}", e))?
-//                 .with_timezone(&Utc);
+    for line in log_content.lines() {
+        if let Some(captures) = timestamp_pattern.captures(line) {
+            let timestamp_str = captures.get(1).unwrap().as_str();
+            let action = captures.get(2).unwrap().as_str();
+            let operation = captures.get(3).unwrap().as_str().to_string();
 
-//             match action {
-//                 "START" => {
-//                     operation_start_times.insert(operation, timestamp);
-//                 }
-//                 "END" => {
-//                     if let Some(start_time) = operation_start_times.remove(&operation) {
-//                         let duration = timestamp
-//                             .signed_duration_since(start_time)
-//                             .to_std()
-//                             .map_err(|e| format!("Duration conversion error: {}", e))?;
+            let timestamp = DateTime::parse_from_rfc3339(timestamp_str)
+                .map_err(|e| format!("Failed to parse timestamp: {}", e))?
+                .with_timezone(&Utc);
 
-//                         // Update benchmark stats
-//                         let stats = benchmark
-//                             .operations
-//                             .entry(operation)
-//                             .or_insert_with(TimingStats::new);
-//                         stats.add_timing(duration);
-//                     }
-//                 }
-//                 _ => {}
-//             }
-//         }
-//     }
+            match action {
+                "START" => {
+                    operation_start_times.insert(operation, timestamp);
+                }
+                "END" => {
+                    if let Some(start_time) = operation_start_times.remove(&operation) {
+                        let duration = timestamp
+                            .signed_duration_since(start_time)
+                            .to_std()
+                            .map_err(|e| format!("Duration conversion error: {}", e))?;
 
-//     Ok(())
-// }
+                        // Update benchmark stats
+                        let stats = benchmark
+                            .operations
+                            .entry(operation)
+                            .or_insert_with(TimingStats::new);
+                        stats.add_timing(duration);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 
-// fn main() -> Result<(), Box<dyn std::error::Error>> {
-//     let args: Vec<String> = env::args().collect();
+    Ok(())
+}
 
-//     if args.len() < 3 {
-//         eprintln!(
-//             "Usage: {} <log_file_path> <benchmark_markdown_path> [client_id]",
-//             args[0]
-//         );
-//         std::process::exit(1);
-//     }
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = env::args().collect();
 
-//     let log_file_path = &args[1];
-//     let benchmark_markdown_path = &args[2];
-//     let client_id = args
-//         .get(3)
-//         .map(|s| s.parse::<usize>().unwrap_or(1))
-//         .unwrap_or(1);
+    if args.len() != 2 {
+        eprintln!(
+            "Usage: {} <log_dir>",
+            args[0]
+        );
+        std::process::exit(1);
+    }
 
-//     // Read log file
-//     let log_content = fs::read_to_string(log_file_path)?;
+    let log_dir = &args[1];
+    let log_file_path = format!("{log_dir}/server.log");
+    let benchmark_markdown_path = format!("{log_dir}/server_benchmarks.md");
+    let client_id = 0;
 
-//     // Create or read existing benchmark
-//     let mut benchmark = ClientBenchmark::new(client_id);
+    // Read log file
+    let log_content = fs::read_to_string(log_file_path)?;
 
-//     // Update benchmark with parsed logs
-//     parse_logs_and_update_benchmark(&log_content, &mut benchmark)?;
+    // Create or read existing benchmark
+    let mut benchmark = ClientBenchmark::new(client_id);
 
-//     // Write updated benchmark back to file
-//     let markdown = benchmark.generate_markdown_table();
-//     fs::write(benchmark_markdown_path, markdown)?;
+    // Update benchmark with parsed logs
+    parse_logs_and_update_benchmark(&log_content, &mut benchmark)?;
 
-//     println!("Successfully updated benchmark at {}", benchmark_markdown_path);
+    // Write updated benchmark back to file
+    let markdown = benchmark.generate_markdown_table();
+    fs::write(&benchmark_markdown_path, markdown)?;
 
-//     Ok(())
-// }
+    println!("Successfully updated benchmark at {}", benchmark_markdown_path);
 
-fn main() {
-    println!("Hello world");
+    Ok(())
 }

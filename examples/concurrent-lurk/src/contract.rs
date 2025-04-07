@@ -95,7 +95,9 @@ impl ConcurrentLurkContract {
     }
 
     async fn execute_transition(&mut self, chain_proof: DataBlobHash) {
+        log::info!(">>> START get_data");
         let data = self.get_data();
+        log::info!(">>> END get_data");
 
         log::info!(">>> START preprocess_microchain_transition");
         let preprocess_data = self
