@@ -71,6 +71,7 @@ tracing = { workspace = true, features = ["log"] }
 url.workspace = true
 wasm-instrument = { workspace = true, features = ["sign_ext"] }
 wasmtime = { workspace = true, optional = true }
+zstd.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }

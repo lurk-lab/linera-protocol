@@ -1007,6 +1007,7 @@ where
             zstore_view,
         } = data;
         let chain_proof_bytes = self.read_blob_content(chain_proof_id).await?.into_bytes();
+        let chain_proof_bytes = zstd::stream::decode_all(&*chain_proof_bytes)?;
         let chain_proof: ChainProof = bincode::deserialize_from(&chain_proof_bytes[..])
             .map_err(|_| ExecutionError::DeserializationFailed("chain_proof".into()))?;
         // let mut chain_proofs: Vec<OpaqueChainProof> = bincode::deserialize_from(&chain_proofs[..])
@@ -1135,6 +1136,7 @@ where
             ..
         } = data;
         let chain_proof_bytes = self.read_blob_content(chain_proof_id).await?.into_bytes();
+        let chain_proof_bytes = zstd::stream::decode_all(&*chain_proof_bytes)?;
         let chain_proof: ChainProof = bincode::deserialize_from(&chain_proof_bytes[..])
             .map_err(|_| ExecutionError::DeserializationFailed("chain_proof".into()))?;
         let chain_state: ChainState = bincode::deserialize_from(&chain_state[..])
