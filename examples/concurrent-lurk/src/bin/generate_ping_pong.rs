@@ -70,10 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 3 {
-        eprintln!(
-            "Usage: {} <lurk_dir> <n>",
-            args[0]
-        );
+        eprintln!("Usage: {} <lurk_dir> <n>", args[0]);
         std::process::exit(1);
     }
 
@@ -82,7 +79,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let contents = generate_lurk(n);
     fs::write(&lurk_file, contents)?;
 
-    println!("Successfully generated ping-pong testing script at {}", lurk_file);
+    println!(
+        "Successfully generated ping-pong testing script at {}",
+        lurk_file
+    );
 
     Ok(())
 }

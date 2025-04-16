@@ -16,8 +16,8 @@ use linera_base::prometheus_util::{
 };
 use linera_base::{
     data_types::{
-        Amount, ApplicationPermissions, BlobContent, BlockHeight, LurkMicrochainData,
-        PostprocessData, PreprocessData, Timestamp,
+        Amount, ApplicationPermissions, ArithmeticError, BlobContent, BlockHeight,
+        LurkMicrochainData, PostprocessData, PreprocessData, Timestamp,
     },
     ensure, hex_debug, hex_vec_debug, http,
     identifiers::{Account, AccountOwner, BlobId, BlobType, ChainId, EventId, MessageId, StreamId},

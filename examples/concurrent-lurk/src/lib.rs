@@ -1,25 +1,48 @@
 // Copyright (c) Lurk Lab Systems Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use async_graphql::SimpleObject;
+use async_graphql::{InputObject, SimpleObject};
 use linera_sdk::{
     abi::{ContractAbi, ServiceAbi},
     graphql::GraphQLMutationRoot,
-    linera_base_types::{ChainId, MessageId, AccountOwner},
+    linera_base_types::{AccountOwner, ChainId, MessageId},
     DataBlobHash,
 };
 use serde::{Deserialize, Serialize};
 
 pub struct ConcurrentLurkAbi;
 
+#[derive(Debug, Deserialize, Serialize, InputObject)]
+pub struct TempData {
+    pub kind: String,
+    pub message: Vec<u8>,
+    pub pid: ChainId,
+}
+
 #[derive(Debug, Deserialize, Serialize, GraphQLMutationRoot)]
 pub enum Operation {
     Transition {
         chain_proof: DataBlobHash,
+
+        pre_kind: String,
+        pre_message: Vec<u8>,
+        pre_pid: ChainId,
+
+        post_kind: String,
+        post_message: Vec<u8>,
+        post_pid: ChainId,
+
+        verify: bool,
     },
     Start {
         owner: AccountOwner,
         chain_state: DataBlobHash,
+
+        post_kind: String,
+        post_message: Vec<u8>,
+        post_pid: ChainId,
+
+        verify: bool,
     },
 }
 

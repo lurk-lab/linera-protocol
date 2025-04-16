@@ -137,10 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 2 {
-        eprintln!(
-            "Usage: {} <log_dir>",
-            args[0]
-        );
+        eprintln!("Usage: {} <log_dir>", args[0]);
         std::process::exit(1);
     }
 
@@ -162,7 +159,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let markdown = benchmark.generate_markdown_table();
     fs::write(&benchmark_markdown_path, markdown)?;
 
-    println!("Successfully updated benchmark at {}", benchmark_markdown_path);
+    println!(
+        "Successfully updated benchmark at {}",
+        benchmark_markdown_path
+    );
 
     Ok(())
 }

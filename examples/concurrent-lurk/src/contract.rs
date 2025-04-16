@@ -6,12 +6,12 @@
 mod state;
 
 use async_graphql::ComplexObject;
-use concurrent_lurk::{ConcurrentLurkAbi, Operation, ProcessId};
+use concurrent_lurk::{ConcurrentLurkAbi, Operation, ProcessId, TempData};
 use linera_sdk::{
     abi::WithContractAbi,
     linera_base_types::{
-        Amount, ApplicationPermissions, ChainOwnership, LurkMicrochainData, AccountOwner, PostprocessData,
-        PreprocessData,
+        AccountOwner, Amount, ApplicationPermissions, ChainOwnership, LurkMicrochainData,
+        PostprocessData, PreprocessData,
     },
     views::{RootView, View},
     Contract, ContractRuntime, DataBlobHash,
@@ -34,6 +34,7 @@ impl Contract for ConcurrentLurkContract {
     type Message = Message;
     type InstantiationArgument = ();
     type Parameters = ();
+    type EventValue = ();
 
     async fn load(runtime: ContractRuntime<Self>) -> Self {
         let state = ConcurrentLurkState::load(runtime.root_view_storage_context())
@@ -49,8 +50,44 @@ impl Contract for ConcurrentLurkContract {
 
     async fn execute_operation(&mut self, operation: Operation) {
         match operation {
-            Operation::Transition { chain_proof } => self.execute_transition(chain_proof).await,
-            Operation::Start { owner, chain_state } => self.execute_start(owner, chain_state).await,
+            Operation::Transition {
+                chain_proof,
+                pre_kind,
+                pre_message,
+                pre_pid,
+                post_kind,
+                post_message,
+                post_pid,
+                verify,
+            } => {
+                let pre = TempData {
+                    kind: pre_kind,
+                    message: pre_message,
+                    pid: pre_pid,
+                };
+                let post = TempData {
+                    kind: post_kind,
+                    message: post_message,
+                    pid: post_pid,
+                };
+                self.execute_transition(chain_proof, pre, post, verify)
+                    .await
+            }
+            Operation::Start {
+                owner,
+                chain_state,
+                post_kind,
+                post_message,
+                post_pid,
+                verify,
+            } => {
+                let post = TempData {
+                    kind: post_kind,
+                    message: post_message,
+                    pid: post_pid,
+                };
+                self.execute_start(owner, chain_state, post, verify).await
+            }
         };
     }
 
@@ -73,50 +110,71 @@ impl Contract for ConcurrentLurkContract {
 }
 
 impl ConcurrentLurkContract {
-    async fn execute_start(&mut self, owner: AccountOwner, chain_state: DataBlobHash) {
+    async fn execute_start(
+        &mut self,
+        owner: AccountOwner,
+        chain_state: DataBlobHash,
+        post: TempData,
+        verify: bool,
+    ) {
         self.state.owner.set(Some(owner));
 
-        log::info!(">>> START assert_data_blob_exists");
-        self.runtime.assert_data_blob_exists(chain_state.clone());
-        let chain_state = self.runtime.read_data_blob(chain_state);
-        log::info!(">>> END assert_data_blob_exists");
+        if verify {
+            log::info!(">>> START assert_data_blob_exists");
+            self.runtime.assert_data_blob_exists(chain_state.clone());
+            let chain_state = self.runtime.read_data_blob(chain_state);
+            log::info!(">>> END assert_data_blob_exists");
 
-        log::info!(">>> START microchain_start");
-        let new_data = self.runtime.microchain_start(chain_state);
-        self.set_data(new_data);
-        log::info!(">>> END microchain_start");
+            log::info!(">>> START microchain_start");
+            let new_data = self.runtime.microchain_start(chain_state);
+            self.set_data(new_data);
+            log::info!(">>> END microchain_start");
 
-        log::info!(">>> START postprocess_microchain_transition");
-        let postprocess_data = self
-            .runtime
-            .postprocess_microchain_transition(self.get_data());
-        self.postprocess_microchain_transition(postprocess_data);
-        log::info!(">>> END postprocess_microchain_transition");
+            log::info!(">>> START postprocess_microchain_transition");
+            let postprocess_data = self
+                .runtime
+                .postprocess_microchain_transition(self.get_data());
+            self.postprocess_microchain_transition(postprocess_data);
+            log::info!(">>> END postprocess_microchain_transition");
+        } else {
+            self.postrocess_temp(post);
+        }
     }
 
-    async fn execute_transition(&mut self, chain_proof: DataBlobHash) {
-        log::info!(">>> START get_data");
-        let data = self.get_data();
-        log::info!(">>> END get_data");
+    async fn execute_transition(
+        &mut self,
+        chain_proof: DataBlobHash,
+        pre: TempData,
+        post: TempData,
+        verify: bool,
+    ) {
+        if verify {
+            log::info!(">>> START get_data");
+            let data = self.get_data();
+            log::info!(">>> END get_data");
 
-        log::info!(">>> START preprocess_microchain_transition");
-        let preprocess_data = self
-            .runtime
-            .preprocess_microchain_transition(chain_proof, data.clone());
-        self.preprocess_microchain_transition(preprocess_data).await;
-        log::info!(">>> END preprocess_microchain_transition");
+            log::info!(">>> START preprocess_microchain_transition");
+            let preprocess_data = self
+                .runtime
+                .preprocess_microchain_transition(chain_proof, data.clone());
+            self.preprocess_microchain_transition(preprocess_data).await;
+            log::info!(">>> END preprocess_microchain_transition");
 
-        log::info!(">>> START microchain_transition");
-        let new_data = self.runtime.microchain_transition(chain_proof, data);
-        self.set_data(new_data);
-        log::info!(">>> END microchain_transition");
+            log::info!(">>> START microchain_transition");
+            let new_data = self.runtime.microchain_transition(chain_proof, data);
+            self.set_data(new_data);
+            log::info!(">>> END microchain_transition");
 
-        log::info!(">>> START postprocess_microchain_transition");
-        let postprocess_data = self
-            .runtime
-            .postprocess_microchain_transition(self.get_data());
-        self.postprocess_microchain_transition(postprocess_data);
-        log::info!(">>> END postprocess_microchain_transition");
+            log::info!(">>> START postprocess_microchain_transition");
+            let postprocess_data = self
+                .runtime
+                .postprocess_microchain_transition(self.get_data());
+            self.postprocess_microchain_transition(postprocess_data);
+            log::info!(">>> END postprocess_microchain_transition");
+        } else {
+            self.preprocess_temp(pre).await;
+            self.postrocess_temp(post);
+        }
     }
 
     async fn preprocess_microchain_transition(&mut self, preprocess_data: PreprocessData) {
@@ -147,12 +205,12 @@ impl ConcurrentLurkContract {
                 let (message_id, chain_id) =
                     self.runtime
                         .open_chain(ownership, permissions, Amount::ZERO);
-                
+
                 assert!(self.state.ready.get().is_none());
                 self.state
                     .ready
                     .set(Some(ProcessId::new(message_id, chain_id)));
-                
+
                 self.runtime.send_message(chain_id, Message::Start);
             }
             PostprocessData::Send { other_pid, message } => {
@@ -162,6 +220,50 @@ impl ConcurrentLurkContract {
             // If `:receive` or just a normal result, do nothing.
             PostprocessData::Receive => (),
             PostprocessData::None => (),
+        }
+    }
+
+    async fn preprocess_temp(&mut self, temp: TempData) {
+        log::info!(">>> preprocess_temp: {:?}", temp);
+        if temp.kind == "spawn" {
+            let ready = self.state.ready.get().clone().unwrap();
+            assert_eq!(ready.chain_id, temp.pid, "Incorrect spawn PID.");
+            self.state.ready.set(None);
+            self.state.children.get_mut().push(ready);
+        } else if temp.kind == "receive" {
+            let expected = self.state.message_queue.front().await.unwrap().unwrap();
+            assert_eq!(
+                temp.message, expected,
+                "Got a different message than expected."
+            );
+            self.state.message_queue.delete_front();
+        }
+    }
+
+    fn postrocess_temp(&mut self, temp: TempData) {
+        log::info!(">>> postprocess_temp: {:?}", temp);
+        if temp.kind == "spawn" {
+            let owner = self.state.owner.get().unwrap();
+            let ownership = ChainOwnership::single_super(owner);
+            let permissions = ApplicationPermissions::default();
+            let (message_id, chain_id) =
+                self.runtime
+                    .open_chain(ownership, permissions, Amount::ZERO);
+
+            log::info!(
+                ">>> postprocess_temp: open chain {:?} {:?}",
+                message_id,
+                chain_id
+            );
+            assert!(self.state.ready.get().is_none());
+            self.state
+                .ready
+                .set(Some(ProcessId::new(message_id, chain_id)));
+
+            self.runtime.send_message(chain_id, Message::Start);
+        } else if temp.kind == "send" {
+            self.runtime
+                .send_message(temp.pid, Message::Message(temp.message));
         }
     }
 

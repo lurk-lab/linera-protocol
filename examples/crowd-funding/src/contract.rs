@@ -134,7 +134,7 @@ impl CrowdFundingContract {
     /// cancelled.
     async fn finish_pledge(&mut self, source: AccountOwner, amount: Amount) {
         log::info!("finish_pledge");
-        
+
         match self.state.status.get() {
             Status::Active => self
                 .state
